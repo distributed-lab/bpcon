@@ -1,5 +1,6 @@
 pub mod message;
 pub mod party;
+mod error;
 
 /// General trait for value itself
 pub trait Value: Eq {}

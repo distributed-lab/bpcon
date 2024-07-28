@@ -2,6 +2,7 @@
 
 use std::sync::mpsc::{Receiver, Sender};
 use crate::{Value, ValueSelector};
+use crate::error::BallotError;
 use crate::message::{MessageRouting, ProtocolMessage};
 
 /// BPCon configuration. Includes ballot time bounds, and other stuff
@@ -19,7 +20,7 @@ pub struct BallotConfig {
 /// corresponding party based on information in `MessageRouting`.
 ///
 /// After finishing of the ballot protocol, party will place the selected value to the
-/// `value_sender` or `None` if selection failed.
+/// `value_sender` or `BallotError` if ballot failed.
 pub struct Party<V: Value, VS: ValueSelector<V>> {
     /// This party's identifier.
     pub id: u64,
@@ -31,7 +32,7 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     out_sender: Sender<(Vec<u8>, MessageRouting)>,
 
     /// Query to submit result
-    value_sender: Sender<Option<V>>,
+    value_sender: Sender<Result<V, BallotError>>,
 
     /// Ballot config (e.g. ballot time bounds)
     cfg: BallotConfig,
@@ -48,7 +49,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         party_ids: Vec<(u64, u128)>,
         in_receiver: Receiver<(Vec<u8>, MessageRouting)>,
         out_sender: Sender<(Vec<u8>, MessageRouting)>,
-        value_sender: Sender<Option<V>>,
+        value_sender: Sender<Result<V, BallotError>>,
         cfg: BallotConfig,
         value_selector: VS,
     ) -> Self {
