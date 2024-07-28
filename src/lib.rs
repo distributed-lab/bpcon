@@ -13,4 +13,6 @@ pub trait ValueSelector<V: Value> {
 
     /// Select value depending on inner conditions
     fn select() -> V;
+
+    // TODO: add other fields to update selector state
 }
