@@ -1,14 +1,18 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+pub mod message;
+pub mod party;
+mod error;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// General trait for value itself.
+pub trait Value: Eq {}
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+/// Trait for value selector and verificator.
+/// Value selection and verification may depend on different conditions for different values.
+pub trait ValueSelector<V: Value> {
+    /// Verifies if a value is selected correctly.
+    fn verify(v: V) -> bool;
+
+    /// Select value depending on inner conditions.
+    fn select() -> V;
+
+    // TODO: add other fields to update selector state.
 }
