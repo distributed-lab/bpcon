@@ -1,4 +1,4 @@
-//! Definition of the BPCon messages implementation
+//! Definition of the BPCon messages implementation.
 
 use serde::{Deserialize, Serialize};
 use crate::message::{Message, MessageRouting, ProtocolMessage};

@@ -1,16 +1,16 @@
-//! Definition of the BPCon participant structure
+//! Definition of the BPCon participant structure.
 
 use std::sync::mpsc::{Receiver, Sender};
 use crate::{Value, ValueSelector};
 use crate::error::BallotError;
-use crate::message::{MessageRouting, ProtocolMessage};
+use crate::message::{MessageRouting, MessageWire, ProtocolMessage};
 
-/// BPCon configuration. Includes ballot time bounds, and other stuff
+/// BPCon configuration. Includes ballot time bounds, and other stuff.
 pub struct BallotConfig {
-    // TODO: define config fields
+    // TODO: define config fields.
 }
 
-/// Party of the BPCon protocol that execute ballot.
+/// Party of the BPCon protocol that executes ballot.
 ///
 /// The communication between party and external
 /// system is done via `in_receiver` and `out_sender` channels. External system should take
@@ -24,23 +24,23 @@ pub struct BallotConfig {
 pub struct Party<V: Value, VS: ValueSelector<V>> {
     /// This party's identifier.
     pub id: u64,
-    /// Other ballot parties' ids in a couple with weight.
-    pub party_ids: Vec<(u64, u128)>,
+    /// Other ballot parties' ids.
+    pub party_ids: Vec<u64>,
 
-    /// Communication queues
-    in_receiver: Receiver<(Vec<u8>, MessageRouting)>,
-    out_sender: Sender<(Vec<u8>, MessageRouting)>,
+    /// Communication queues.
+    in_receiver: Receiver<MessageWire>,
+    out_sender: Sender<MessageWire>,
 
-    /// Query to submit result
+    /// Query to submit result.
     value_sender: Sender<Result<V, BallotError>>,
 
-    /// Ballot config (e.g. ballot time bounds)
+    /// Ballot config (e.g. ballot time bounds).
     cfg: BallotConfig,
 
-    /// Main functional for value selection
+    /// Main functional for value selection.
     value_selector: VS,
 
-    // TODO: define other state fields if needed
+    // TODO: define other state fields if needed.
 }
 
 impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
@@ -85,6 +85,6 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
 
 impl<V: Value, VS: ValueSelector<V>> Drop for Party<V, VS> {
     fn drop(&mut self) {
-        // TODO: stop party
+        // TODO: stop party.
     }
 }
