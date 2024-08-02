@@ -46,9 +46,9 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
 impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     pub fn new(
         id: u64,
-        party_ids: Vec<(u64, u128)>,
-        in_receiver: Receiver<(Vec<u8>, MessageRouting)>,
-        out_sender: Sender<(Vec<u8>, MessageRouting)>,
+        party_ids: Vec<u64>,
+        in_receiver: Receiver<MessageWire>,
+        out_sender: Sender<MessageWire>,
         value_sender: Sender<Result<V, BallotError>>,
         cfg: BallotConfig,
         value_selector: VS,
