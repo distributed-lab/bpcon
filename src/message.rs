@@ -1,30 +1,9 @@
-//! Definition of the BPCon message trait and enum.
-
-pub mod msg1a;
-pub mod msg1b;
-pub mod msg1c;
-pub mod msg2a;
-pub mod msg2av;
-pub mod msg2b;
+//! Definition of the BPCon messages.
 
 use serde::{Deserialize, Serialize};
 
-/// Generic communicative unit in ballot.
-pub trait Message: Serialize + for<'a> Deserialize<'a> {
-    /// Which participant this message came from.
-    fn get_sender_id(&self) -> u64;
-    /// Where this message should be delivered.
-    fn get_receivers_id(&self) -> Vec<u64>;
-    /// Indicates whether this message shall be broadcast to other participants. Can be empty if `is_broadcast` is `true`
-    fn is_broadcast(&self) -> bool;
-    /// Encode inner message to bytes and receive routing information.
-    fn msg_routing(&self) -> MessageRouting;
-    /// Returns the BPCon message type.
-    fn msg_type(&self) -> ProtocolMessage;
-}
-
 /// Message ready for transfer.
-pub struct MessageWire{
+pub struct MessageWire {
     /// Serialized message contents.
     pub content_bytes: Vec<u8>,
     /// Routing information.
@@ -52,3 +31,21 @@ pub enum ProtocolMessage {
     Msg2av,
     Msg2b,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Message1aContent {}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Message1bContent {}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Message1cContent {}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Message2aContent {}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Message2avContent {}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Message2bContent {}
