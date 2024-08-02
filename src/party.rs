@@ -1,14 +1,21 @@
 //! Definition of the BPCon participant structure.
 
 use std::cmp::PartialEq;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use crate::{Value, ValueSelector};
 use crate::error::BallotError;
-use crate::message::{Message1aContent, Message1bContent, Message1cContent, Message2aContent, Message2avContent, Message2bContent, MessageRouting, MessageWire, ProtocolMessage};
+use crate::message::{Message1aContent, Message1bContent, Message2aContent, Message2avContent, Message2bContent, MessageRouting, MessageWire, ProtocolMessage};
 
 /// BPCon configuration. Includes ballot time bounds, and other stuff.
-pub struct BallotConfig {
-    // TODO: define config fields.
+pub struct BPConConfig {
+    /// Parties weights: `party_weights[i]` corresponds to the i-th party weight
+    pub party_weights: Vec<u64>,
+
+    /// Threshold weight to define BFT quorum: should be > 66.6%
+    pub threshold: u128,
+
+    // TODO: define other config fields.
 }
 
 /// Party status defines the statuses of the ballot for the particular participant
@@ -19,8 +26,9 @@ pub(crate) enum PartyStatus {
     Launched,
     Passed1a,
     Passed1b,
-    Passed1c,
     Passed2a,
+    Passed2av,
+    Passed2b,
     Finished,
     Failed,
     Stopped,
@@ -31,7 +39,6 @@ pub(crate) enum PartyStatus {
 pub(crate) enum PartyEvent {
     Launch1a,
     Launch1b,
-    Launch1c,
     Launch2a,
     Launch2av,
     Launch2b,
@@ -52,8 +59,6 @@ pub(crate) enum PartyEvent {
 pub struct Party<V: Value, VS: ValueSelector<V>> {
     /// This party's identifier.
     pub id: u64,
-    /// Other ballot parties' ids.
-    pub party_ids: Vec<u64>,
 
     /// Communication queues.
     msg_in_receiver: Receiver<MessageWire>,
@@ -66,8 +71,8 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     event_receiver: Receiver<PartyEvent>,
     event_sender: Sender<PartyEvent>,
 
-    /// Ballot config (e.g. ballot time bounds).
-    cfg: BallotConfig,
+    /// BPCon config (e.g. ballot time bounds, parties weights, etc.).
+    cfg: BPConConfig,
 
     /// Main functional for value selection.
     value_selector: VS,
@@ -75,16 +80,45 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     /// Status of the ballot execution
     status: PartyStatus,
 
+    /// Current ballot number
+    ballot: u64,
+
+    /// Last ballot where party submitted 2b message
+    last_ballot_voted: Option<u64>,
+
+    /// Last value for which party submitted 2b message
+    last_value_voted: Option<Vec<u8>>,
+
     // TODO: define other state fields if needed.
+
+
+    /// 1b round state
+    ///
+    parties_voted_before: HashMap<u64, Option<Vec<u8>>>, // id <-> value
+    messages_1b_weight: u128,
+
+    /// 2a round state
+    ///
+    value_2a: Option<V>,
+
+    /// 2av round state
+    ///
+    messages_2av_senders: HashSet<u64>,
+    messages_2av_weight: u128,
+
+    /// 2b round state
+    ///
+    messages_2b_senders: HashSet<u64>,
+    messages_2b_weight: u128,
+
 }
 
 
 impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     pub fn new(
         id: u64,
-        party_ids: Vec<u64>,
         value_sender: Sender<Result<V, BallotError>>,
-        cfg: BallotConfig,
+        cfg: BPConConfig,
         value_selector: VS,
     ) -> (
         Self,
@@ -98,7 +132,6 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         (
             Self {
                 id,
-                party_ids,
                 msg_in_receiver,
                 msg_out_sender,
                 value_sender,
@@ -107,6 +140,16 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 cfg,
                 value_selector,
                 status: PartyStatus::None,
+                ballot: 0,
+                last_ballot_voted: None,
+                last_value_voted: None,
+                parties_voted_before: HashMap::new(),
+                messages_1b_weight: 0,
+                value_2a: None,
+                messages_2av_senders: HashSet::new(),
+                messages_2av_weight: 0,
+                messages_2b_senders: HashSet::new(),
+                messages_2b_weight: 0,
             },
             msg_out_receiver,
             msg_in_sender
@@ -121,8 +164,20 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         return self.status == PartyStatus::Finished || self.status == PartyStatus::Failed || self.status == PartyStatus::Stopped;
     }
 
-    /// Start the party.
-    pub async fn launch(&mut self) {
+    pub fn get_leader(&self) -> u64 {
+        // TODO: implement weight random based on some conditions
+        todo!()
+    }
+
+    pub fn get_value(&self) -> V {
+        return self.value_selector.select(&self.parties_voted_before);
+    }
+
+    /// Start the next ballot. It's expected from the external system to re-run ballot protocol in
+    /// case of failed ballot.
+    pub async fn launch_ballot(&mut self) {
+        self.prepare_next_ballot();
+
         while self.is_launched() {
             /// Check for new messages
             if let Ok(msg_wire) = self.msg_in_receiver.try_recv() {
@@ -138,27 +193,123 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         }
     }
 
+
+    /// Prepare state before running a ballot
+    fn prepare_next_ballot(&mut self) {
+        self.status = PartyStatus::None;
+        self.ballot = self.ballot + 1;
+
+        // Clean state
+        self.parties_voted_before = HashMap::new();
+        self.messages_1b_weight = 0;
+        self.value_2a = None;
+        self.messages_2av_senders = HashSet::new();
+        self.messages_2av_weight = 0;
+        self.messages_2b_senders = HashSet::new();
+        self.messages_2b_weight = 0;
+
+        // Cleaning channels
+        while let Ok(_) = self.event_receiver.try_recv() {}
+        while let Ok(_) = self.msg_in_receiver.try_recv() {}
+
+        self.status = PartyStatus::Launched;
+    }
+
     /// Update party's state based on message type.
-    fn update_state(&mut self, msg: Vec<u8>, routing: MessageRouting) {
+    fn update_state(&mut self, m: Vec<u8>, routing: MessageRouting) {
         // TODO: Implement according to protocol rules.
         match routing.msg_type {
             ProtocolMessage::Msg1a => {
-                if let Ok(msg) = serde_json::from_slice::<Message1aContent>(msg.as_slice()) {}
+                if let Ok(msg) = serde_json::from_slice::<Message1aContent>(m.as_slice()) {
+                    if msg.ballot != self.ballot {
+                        return;
+                    }
+
+                    if routing.sender != self.get_leader() {
+                        return;
+                    }
+
+                    self.status = PartyStatus::Passed1a;
+                }
             }
             ProtocolMessage::Msg1b => {
-                if let Ok(msg) = serde_json::from_slice::<Message1bContent>(msg.as_slice()) {}
-            }
-            ProtocolMessage::Msg1c => {
-                if let Ok(msg) = serde_json::from_slice::<Message1cContent>(msg.as_slice()) {}
+                if let Ok(msg) = serde_json::from_slice::<Message1bContent>(m.as_slice()) {
+                    if msg.ballot != self.ballot {
+                        return;
+                    }
+
+                    if let Some(last_ballot_voted) = msg.last_ballot_voted {
+                        if last_ballot_voted >= self.ballot {
+                            return;
+                        }
+                    }
+
+                    if !self.parties_voted_before.contains_key(&routing.sender) {
+                        self.parties_voted_before.insert(routing.sender, msg.last_value_voted);
+                        self.messages_1b_weight += self.cfg.party_weights[routing.sender as usize] as u128;
+
+                        if self.messages_1b_weight > self.cfg.threshold {
+                            self.status = PartyStatus::Passed1b
+                        }
+                    }
+                }
             }
             ProtocolMessage::Msg2a => {
-                if let Ok(msg) = serde_json::from_slice::<Message2aContent>(msg.as_slice()) {}
+                if let Ok(msg) = serde_json::from_slice::<Message2aContent>(m.as_slice()) {
+                    if msg.ballot != self.ballot {
+                        return;
+                    }
+
+                    if routing.sender != self.get_leader() {
+                        return;
+                    }
+
+                    if let Ok(value_received) = serde_json::from_slice::<V>(msg.value.as_slice()) {
+                        if self.value_selector.verify(&value_received, &self.parties_voted_before) {
+                            self.status = PartyStatus::Passed2a;
+                            self.value_2a = Some(value_received);
+                        }
+                    }
+                }
             }
             ProtocolMessage::Msg2av => {
-                if let Ok(msg) = serde_json::from_slice::<Message2avContent>(msg.as_slice()) {}
+                if let Ok(msg) = serde_json::from_slice::<Message2avContent>(m.as_slice()) {
+                    if msg.ballot != self.ballot {
+                        return;
+                    }
+
+                    if let Ok(value_received) = serde_json::from_slice::<V>(msg.received_value.as_slice()) {
+                        if value_received != self.value_2a.clone().unwrap() {
+                            return;
+                        }
+                    }
+
+                    if !self.messages_2av_senders.contains(&routing.sender) {
+                        self.messages_2av_senders.insert(routing.sender);
+                        self.messages_2av_weight += self.cfg.party_weights[routing.sender as usize] as u128;
+
+                        if self.messages_2av_weight > self.cfg.threshold {
+                            self.status = PartyStatus::Passed2av
+                        }
+                    }
+                }
             }
             ProtocolMessage::Msg2b => {
-                if let Ok(msg) = serde_json::from_slice::<Message2bContent>(msg.as_slice()) {}
+                if let Ok(msg) = serde_json::from_slice::<Message2bContent>(m.as_slice()) {
+                    if msg.ballot != self.ballot {
+                        return;
+                    }
+
+                    // Only those who submitted 2av
+                    if self.messages_2av_senders.contains(&routing.sender) && !self.messages_2b_senders.contains(&routing.sender) {
+                        self.messages_2b_senders.insert(routing.sender);
+                        self.messages_2b_weight += self.cfg.party_weights[routing.sender as usize] as u128;
+
+                        if self.messages_2b_weight > self.cfg.threshold {
+                            self.status = PartyStatus::Passed2b
+                        }
+                    }
+                }
             }
         }
     }
@@ -167,13 +318,86 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     fn follow_event(&mut self, event: PartyEvent) {
         // TODO: Implement according to protocol rules.
         match event {
-            PartyEvent::Launch1a => {}
-            PartyEvent::Launch1b => {}
-            PartyEvent::Launch1c => {}
-            PartyEvent::Launch2a => {}
-            PartyEvent::Launch2av => {}
-            PartyEvent::Launch2b => {}
-            PartyEvent::Finalize => {}
+            PartyEvent::Launch1a => {
+                if self.status != PartyStatus::Launched {
+                    self.status = PartyStatus::Failed;
+                    return;
+                }
+
+                if self.get_leader() == self.id {
+                    self.msg_out_sender.send(MessageWire {
+                        content_bytes: serde_json::to_vec(&Message1aContent { ballot: self.ballot }).unwrap(),
+                        routing: Message1aContent::get_routing(self.id),
+                    }).unwrap();
+                }
+            }
+            PartyEvent::Launch1b => {
+                if self.status != PartyStatus::Passed1a {
+                    self.status = PartyStatus::Failed;
+                    return;
+                }
+
+                self.msg_out_sender.send(MessageWire {
+                    content_bytes: serde_json::to_vec(&Message1bContent {
+                        ballot: self.ballot,
+                        last_ballot_voted: self.last_ballot_voted.clone(),
+                        last_value_voted: self.last_value_voted.clone(),
+                    }).unwrap(),
+                    routing: Message1bContent::get_routing(self.id),
+                }).unwrap();
+            }
+            PartyEvent::Launch2a => {
+                if self.status != PartyStatus::Passed1b {
+                    self.status = PartyStatus::Failed;
+                    return;
+                }
+
+                if self.get_leader() == self.id {
+                    self.msg_out_sender.send(MessageWire {
+                        content_bytes: serde_json::to_vec(&Message2aContent {
+                            ballot: self.ballot,
+                            value: serde_json::to_vec(&self.get_value()).unwrap(),
+                        }).unwrap(),
+                        routing: Message2aContent::get_routing(self.id),
+                    }).unwrap();
+                }
+            }
+            PartyEvent::Launch2av => {
+                if self.status != PartyStatus::Passed2a {
+                    self.status = PartyStatus::Failed;
+                    return;
+                }
+
+                self.msg_out_sender.send(MessageWire {
+                    content_bytes: serde_json::to_vec(&Message2avContent {
+                        ballot: self.ballot,
+                        received_value: serde_json::to_vec(&self.value_2a.clone().unwrap()).unwrap(),
+                    }).unwrap(),
+                    routing: Message2avContent::get_routing(self.id),
+                }).unwrap();
+            }
+            PartyEvent::Launch2b => {
+                if self.status != PartyStatus::Passed2av {
+                    self.status = PartyStatus::Failed;
+                    return;
+                }
+
+                self.msg_out_sender.send(MessageWire {
+                    content_bytes: serde_json::to_vec(&Message2bContent {
+                        ballot: self.ballot,
+                    }).unwrap(),
+                    routing: Message2bContent::get_routing(self.id),
+                }).unwrap();
+            }
+            PartyEvent::Finalize => {
+                if self.status != PartyStatus::Passed2av {
+                    self.status = PartyStatus::Failed;
+                    return;
+                }
+
+                self.value_sender.send(Ok(self.value_2a.clone().unwrap())).unwrap();
+                self.status = PartyStatus::Finished;
+            }
         }
     }
 }

@@ -26,26 +26,91 @@ pub struct MessageRouting {
 pub enum ProtocolMessage {
     Msg1a,
     Msg1b,
-    Msg1c,
     Msg2a,
     Msg2av,
     Msg2b,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Message1aContent {}
+pub struct Message1aContent {
+    pub ballot: u64,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Message1bContent {}
+pub struct Message1bContent {
+    pub ballot: u64,
+    pub last_ballot_voted: Option<u64>,
+    pub last_value_voted: Option<Vec<u8>>,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Message1cContent {}
+pub struct Message2aContent {
+    pub ballot: u64,
+    pub value: Vec<u8>,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Message2aContent {}
+pub struct Message2avContent {
+    pub ballot: u64,
+    pub received_value: Vec<u8>,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Message2avContent {}
+pub struct Message2bContent {
+    pub ballot: u64,
+}
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Message2bContent {}
+impl Message1aContent {
+    pub fn get_routing(id: u64) -> MessageRouting {
+        MessageRouting {
+            sender: id,
+            receivers: vec![],
+            is_broadcast: true,
+            msg_type: ProtocolMessage::Msg1a,
+        }
+    }
+}
+
+impl Message1bContent {
+    pub fn get_routing(id: u64) -> MessageRouting {
+        MessageRouting {
+            sender: id,
+            receivers: vec![],
+            is_broadcast: true,
+            msg_type: ProtocolMessage::Msg1b,
+        }
+    }
+}
+
+impl Message2aContent {
+    pub fn get_routing(id: u64) -> MessageRouting {
+        MessageRouting {
+            sender: id,
+            receivers: vec![],
+            is_broadcast: true,
+            msg_type: ProtocolMessage::Msg2a,
+        }
+    }
+}
+
+impl Message2avContent {
+    pub fn get_routing(id: u64) -> MessageRouting {
+        MessageRouting {
+            sender: id,
+            receivers: vec![],
+            is_broadcast: true,
+            msg_type: ProtocolMessage::Msg2av,
+        }
+    }
+}
+
+impl Message2bContent {
+    pub fn get_routing(id: u64) -> MessageRouting {
+        MessageRouting {
+            sender: id,
+            receivers: vec![],
+            is_broadcast: true,
+            msg_type: ProtocolMessage::Msg2b,
+        }
+    }
+}
