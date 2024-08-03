@@ -4,7 +4,6 @@ use std::cmp::PartialEq;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use crate::{Value, ValueSelector};
-use crate::error::BallotError;
 use crate::message::{Message1aContent, Message1bContent, Message2aContent, Message2avContent, Message2bContent, MessageRouting, MessageWire, ProtocolMessage};
 
 /// BPCon configuration. Includes ballot time bounds, and other stuff.
@@ -12,7 +11,7 @@ pub struct BPConConfig {
     /// Parties weights: `party_weights[i]` corresponds to the i-th party weight
     pub party_weights: Vec<u64>,
 
-    /// Threshold weight to define BFT quorum: should be > 66.6%
+    /// Threshold weight to define BFT quorum: should be > 2/3 of total weight
     pub threshold: u128,
 
     // TODO: define other config fields.
@@ -31,7 +30,6 @@ pub(crate) enum PartyStatus {
     Passed2b,
     Finished,
     Failed,
-    Stopped,
 }
 
 /// Party events is used for the ballot flow control.
@@ -43,7 +41,6 @@ pub(crate) enum PartyEvent {
     Launch2av,
     Launch2b,
     Finalize,
-    Stop,
 }
 
 /// Party of the BPCon protocol that executes ballot.
@@ -159,7 +156,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     }
 
     pub fn is_stopped(&self) -> bool {
-        return self.status == PartyStatus::Finished || self.status == PartyStatus::Failed || self.status == PartyStatus::Stopped;
+        return self.status == PartyStatus::Finished || self.status == PartyStatus::Failed;
     }
 
     pub fn get_value_selected(&self) -> Option<V> {
@@ -182,22 +179,30 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
 
     /// Start the next ballot. It's expected from the external system to re-run ballot protocol in
     /// case of failed ballot.
-    pub async fn launch_ballot(&mut self) {
+    pub async fn launch_ballot(&mut self) -> Option<V> {
         self.prepare_next_ballot();
 
         while self.is_launched() {
-            /// Check for new messages
+            // Check for new messages
             if let Ok(msg_wire) = self.msg_in_receiver.try_recv() {
                 self.update_state(msg_wire.content_bytes, msg_wire.routing);
             }
 
-            /// Check for new events
+            // Check for new events
             if let Ok(event) = self.event_receiver.try_recv() {
                 self.follow_event(event);
             }
 
             // TODO: emit events to run ballot protocol according to the ballot configuration `BallotConfig`
+            self.event_sender.send(PartyEvent::Launch1a).unwrap();
+            self.event_sender.send(PartyEvent::Launch1b).unwrap();
+            self.event_sender.send(PartyEvent::Launch2a).unwrap();
+            self.event_sender.send(PartyEvent::Launch2av).unwrap();
+            self.event_sender.send(PartyEvent::Launch2b).unwrap();
+            self.event_sender.send(PartyEvent::Finalize).unwrap();
         }
+
+        return self.get_value_selected();
     }
 
     /// Prepare state before running a ballot
@@ -402,9 +407,6 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
 
                 self.status = PartyStatus::Finished;
-            }
-            PartyEvent::Stop => {
-                self.status = PartyStatus::Stopped;
             }
         }
     }
