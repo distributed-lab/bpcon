@@ -65,9 +65,6 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     msg_in_receiver: Receiver<MessageWire>,
     msg_out_sender: Sender<MessageWire>,
 
-    /// Query to submit result.
-    value_sender: Sender<Result<V, BallotError>>,
-
     /// Query to receive and send events that run ballot protocol
     event_receiver: Receiver<PartyEvent>,
     event_sender: Sender<PartyEvent>,
@@ -110,7 +107,6 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     ///
     messages_2b_senders: HashSet<u64>,
     messages_2b_weight: u128,
-
 }
 
 
@@ -123,19 +119,16 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         Self,
         Receiver<MessageWire>,
         Sender<MessageWire>,
-        Receiver<Result<V, BallotError>>,
     ) {
         let (event_sender, event_receiver) = channel();
         let (msg_in_sender, msg_in_receiver) = channel();
         let (msg_out_sender, msg_out_receiver) = channel();
-        let (value_sender, value_receiver) = channel();
 
         (
             Self {
                 id,
                 msg_in_receiver,
                 msg_out_sender,
-                value_sender,
                 event_receiver,
                 event_sender,
                 cfg,
@@ -154,8 +147,11 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
             },
             msg_out_receiver,
             msg_in_sender,
-            value_receiver,
         )
+    }
+
+    pub fn ballot(&self) -> u64 {
+        return self.ballot;
     }
 
     pub fn is_launched(&self) -> bool {
@@ -166,12 +162,21 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         return self.status == PartyStatus::Finished || self.status == PartyStatus::Failed || self.status == PartyStatus::Stopped;
     }
 
-    pub fn get_leader(&self) -> u64 {
+    pub fn get_value_selected(&self) -> Option<V> {
+        // Only `Finished` status means reached BFT agreement
+        if self.status == PartyStatus::Finished {
+            return self.value_2a.clone();
+        }
+
+        return None;
+    }
+
+    fn get_leader(&self) -> u64 {
         // TODO: implement weight random based on some conditions
         todo!()
     }
 
-    pub fn get_value(&self) -> V {
+    fn get_value(&self) -> V {
         return self.value_selector.select(&self.parties_voted_before);
     }
 
@@ -193,11 +198,6 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
 
             // TODO: emit events to run ballot protocol according to the ballot configuration `BallotConfig`
         }
-    }
-
-    /// Stop ballot protocol.
-    pub fn stop_ballot(&mut self) {
-        self.event_sender.send(PartyEvent::Stop).unwrap();
     }
 
     /// Prepare state before running a ballot
@@ -401,7 +401,6 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     return;
                 }
 
-                self.value_sender.send(Ok(self.value_2a.clone().unwrap())).unwrap();
                 self.status = PartyStatus::Finished;
             }
             PartyEvent::Stop => {
