@@ -43,6 +43,7 @@ pub(crate) enum PartyEvent {
     Launch2av,
     Launch2b,
     Finalize,
+    Stop,
 }
 
 /// Party of the BPCon protocol that executes ballot.
@@ -89,8 +90,7 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     /// Last value for which party submitted 2b message
     last_value_voted: Option<Vec<u8>>,
 
-    // TODO: define other state fields if needed.
-
+    /// Local round fields
 
     /// 1b round state
     ///
@@ -193,6 +193,10 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         }
     }
 
+    /// Stop ballot protocol.
+    pub fn stop_ballot(&mut self) {
+        self.event_sender.send(PartyEvent::Stop).unwrap();
+    }
 
     /// Prepare state before running a ballot
     fn prepare_next_ballot(&mut self) {
@@ -398,12 +402,9 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 self.value_sender.send(Ok(self.value_2a.clone().unwrap())).unwrap();
                 self.status = PartyStatus::Finished;
             }
+            PartyEvent::Stop => {
+                self.status = PartyStatus::Stopped;
+            }
         }
-    }
-}
-
-impl<V: Value, VS: ValueSelector<V>> Drop for Party<V, VS> {
-    fn drop(&mut self) {
-        self.status = PartyStatus::Stopped
     }
 }
