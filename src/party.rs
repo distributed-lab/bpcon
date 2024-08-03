@@ -117,17 +117,18 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
 impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     pub fn new(
         id: u64,
-        value_sender: Sender<Result<V, BallotError>>,
         cfg: BPConConfig,
         value_selector: VS,
     ) -> (
         Self,
         Receiver<MessageWire>,
-        Sender<MessageWire>
+        Sender<MessageWire>,
+        Receiver<Result<V, BallotError>>,
     ) {
         let (event_sender, event_receiver) = channel();
         let (msg_in_sender, msg_in_receiver) = channel();
         let (msg_out_sender, msg_out_receiver) = channel();
+        let (value_sender, value_receiver) = channel();
 
         (
             Self {
@@ -152,7 +153,8 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 messages_2b_weight: 0,
             },
             msg_out_receiver,
-            msg_in_sender
+            msg_in_sender,
+            value_receiver,
         )
     }
 
