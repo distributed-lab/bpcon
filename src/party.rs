@@ -1,10 +1,13 @@
 //! Definition of the BPCon participant structure.
 
+use crate::message::{
+    Message1aContent, Message1bContent, Message2aContent, Message2avContent, Message2bContent,
+    MessageRouting, MessageWire, ProtocolMessage,
+};
+use crate::{Value, ValueSelector};
 use std::cmp::PartialEq;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use crate::{Value, ValueSelector};
-use crate::message::{Message1aContent, Message1bContent, Message2aContent, Message2avContent, Message2bContent, MessageRouting, MessageWire, ProtocolMessage};
 
 /// BPCon configuration. Includes ballot time bounds, and other stuff.
 pub struct BPConConfig {
@@ -13,7 +16,6 @@ pub struct BPConConfig {
 
     /// Threshold weight to define BFT quorum: should be > 2/3 of total weight
     pub threshold: u128,
-
     // TODO: define other config fields.
 }
 
@@ -106,17 +108,12 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     messages_2b_weight: u128,
 }
 
-
 impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     pub fn new(
         id: u64,
         cfg: BPConConfig,
         value_selector: VS,
-    ) -> (
-        Self,
-        Receiver<MessageWire>,
-        Sender<MessageWire>,
-    ) {
+    ) -> (Self, Receiver<MessageWire>, Sender<MessageWire>) {
         let (event_sender, event_receiver) = channel();
         let (msg_in_sender, msg_in_receiver) = channel();
         let (msg_out_sender, msg_out_receiver) = channel();
@@ -256,8 +253,10 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     }
 
                     if !self.parties_voted_before.contains_key(&routing.sender) {
-                        self.parties_voted_before.insert(routing.sender, msg.last_value_voted);
-                        self.messages_1b_weight += self.cfg.party_weights[routing.sender as usize] as u128;
+                        self.parties_voted_before
+                            .insert(routing.sender, msg.last_value_voted);
+                        self.messages_1b_weight +=
+                            self.cfg.party_weights[routing.sender as usize] as u128;
 
                         if self.messages_1b_weight > self.cfg.threshold {
                             self.status = PartyStatus::Passed1b
@@ -276,7 +275,10 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     }
 
                     if let Ok(value_received) = serde_json::from_slice::<V>(msg.value.as_slice()) {
-                        if self.value_selector.verify(&value_received, &self.parties_voted_before) {
+                        if self
+                            .value_selector
+                            .verify(&value_received, &self.parties_voted_before)
+                        {
                             self.status = PartyStatus::Passed2a;
                             self.value_2a = Some(value_received);
                         }
@@ -289,7 +291,9 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         return;
                     }
 
-                    if let Ok(value_received) = serde_json::from_slice::<V>(msg.received_value.as_slice()) {
+                    if let Ok(value_received) =
+                        serde_json::from_slice::<V>(msg.received_value.as_slice())
+                    {
                         if value_received != self.value_2a.clone().unwrap() {
                             return;
                         }
@@ -297,7 +301,8 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
 
                     if !self.messages_2av_senders.contains(&routing.sender) {
                         self.messages_2av_senders.insert(routing.sender);
-                        self.messages_2av_weight += self.cfg.party_weights[routing.sender as usize] as u128;
+                        self.messages_2av_weight +=
+                            self.cfg.party_weights[routing.sender as usize] as u128;
 
                         if self.messages_2av_weight > self.cfg.threshold {
                             self.status = PartyStatus::Passed2av
@@ -312,9 +317,12 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     }
 
                     // Only those who submitted 2av
-                    if self.messages_2av_senders.contains(&routing.sender) && !self.messages_2b_senders.contains(&routing.sender) {
+                    if self.messages_2av_senders.contains(&routing.sender)
+                        && !self.messages_2b_senders.contains(&routing.sender)
+                    {
                         self.messages_2b_senders.insert(routing.sender);
-                        self.messages_2b_weight += self.cfg.party_weights[routing.sender as usize] as u128;
+                        self.messages_2b_weight +=
+                            self.cfg.party_weights[routing.sender as usize] as u128;
 
                         if self.messages_2b_weight > self.cfg.threshold {
                             self.status = PartyStatus::Passed2b
@@ -336,10 +344,15 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
 
                 if self.get_leader() == self.id {
-                    self.msg_out_sender.send(MessageWire {
-                        content_bytes: serde_json::to_vec(&Message1aContent { ballot: self.ballot }).unwrap(),
-                        routing: Message1aContent::get_routing(self.id),
-                    }).unwrap();
+                    self.msg_out_sender
+                        .send(MessageWire {
+                            content_bytes: serde_json::to_vec(&Message1aContent {
+                                ballot: self.ballot,
+                            })
+                            .unwrap(),
+                            routing: Message1aContent::get_routing(self.id),
+                        })
+                        .unwrap();
                 }
             }
             PartyEvent::Launch1b => {
@@ -348,14 +361,17 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     return;
                 }
 
-                self.msg_out_sender.send(MessageWire {
-                    content_bytes: serde_json::to_vec(&Message1bContent {
-                        ballot: self.ballot,
-                        last_ballot_voted: self.last_ballot_voted.clone(),
-                        last_value_voted: self.last_value_voted.clone(),
-                    }).unwrap(),
-                    routing: Message1bContent::get_routing(self.id),
-                }).unwrap();
+                self.msg_out_sender
+                    .send(MessageWire {
+                        content_bytes: serde_json::to_vec(&Message1bContent {
+                            ballot: self.ballot,
+                            last_ballot_voted: self.last_ballot_voted.clone(),
+                            last_value_voted: self.last_value_voted.clone(),
+                        })
+                        .unwrap(),
+                        routing: Message1bContent::get_routing(self.id),
+                    })
+                    .unwrap();
             }
             PartyEvent::Launch2a => {
                 if self.status != PartyStatus::Passed1b {
@@ -364,13 +380,16 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
 
                 if self.get_leader() == self.id {
-                    self.msg_out_sender.send(MessageWire {
-                        content_bytes: serde_json::to_vec(&Message2aContent {
-                            ballot: self.ballot,
-                            value: serde_json::to_vec(&self.get_value()).unwrap(),
-                        }).unwrap(),
-                        routing: Message2aContent::get_routing(self.id),
-                    }).unwrap();
+                    self.msg_out_sender
+                        .send(MessageWire {
+                            content_bytes: serde_json::to_vec(&Message2aContent {
+                                ballot: self.ballot,
+                                value: serde_json::to_vec(&self.get_value()).unwrap(),
+                            })
+                            .unwrap(),
+                            routing: Message2aContent::get_routing(self.id),
+                        })
+                        .unwrap();
                 }
             }
             PartyEvent::Launch2av => {
@@ -379,13 +398,17 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     return;
                 }
 
-                self.msg_out_sender.send(MessageWire {
-                    content_bytes: serde_json::to_vec(&Message2avContent {
-                        ballot: self.ballot,
-                        received_value: serde_json::to_vec(&self.value_2a.clone().unwrap()).unwrap(),
-                    }).unwrap(),
-                    routing: Message2avContent::get_routing(self.id),
-                }).unwrap();
+                self.msg_out_sender
+                    .send(MessageWire {
+                        content_bytes: serde_json::to_vec(&Message2avContent {
+                            ballot: self.ballot,
+                            received_value: serde_json::to_vec(&self.value_2a.clone().unwrap())
+                                .unwrap(),
+                        })
+                        .unwrap(),
+                        routing: Message2avContent::get_routing(self.id),
+                    })
+                    .unwrap();
             }
             PartyEvent::Launch2b => {
                 if self.status != PartyStatus::Passed2av {
@@ -393,12 +416,15 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     return;
                 }
 
-                self.msg_out_sender.send(MessageWire {
-                    content_bytes: serde_json::to_vec(&Message2bContent {
-                        ballot: self.ballot,
-                    }).unwrap(),
-                    routing: Message2bContent::get_routing(self.id),
-                }).unwrap();
+                self.msg_out_sender
+                    .send(MessageWire {
+                        content_bytes: serde_json::to_vec(&Message2bContent {
+                            ballot: self.ballot,
+                        })
+                        .unwrap(),
+                        routing: Message2bContent::get_routing(self.id),
+                    })
+                    .unwrap();
             }
             PartyEvent::Finalize => {
                 if self.status != PartyStatus::Passed2av {

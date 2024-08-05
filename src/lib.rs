@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
+mod error;
 pub mod message;
 pub mod party;
-mod error;
 
 /// General trait for value itself.
 pub trait Value: Eq + Serialize + for<'a> Deserialize<'a> + Clone {}
