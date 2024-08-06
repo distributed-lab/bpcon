@@ -145,15 +145,15 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     }
 
     pub fn ballot(&self) -> u64 {
-        return self.ballot;
+        self.ballot
     }
 
     pub fn is_launched(&self) -> bool {
-        return !self.is_stopped();
+        !self.is_stopped()
     }
 
     pub fn is_stopped(&self) -> bool {
-        return self.status == PartyStatus::Finished || self.status == PartyStatus::Failed;
+        self.status == PartyStatus::Finished || self.status == PartyStatus::Failed
     }
 
     pub fn get_value_selected(&self) -> Option<V> {
@@ -162,7 +162,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
             return self.value_2a.clone();
         }
 
-        return None;
+        None
     }
 
     fn get_leader(&self) -> u64 {
@@ -171,7 +171,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     }
 
     fn get_value(&self) -> V {
-        return self.value_selector.select(&self.parties_voted_before);
+        self.value_selector.select(&self.parties_voted_before)
     }
 
     /// Start the next ballot. It's expected from the external system to re-run ballot protocol in
@@ -199,13 +199,13 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
             self.event_sender.send(PartyEvent::Finalize).unwrap();
         }
 
-        return self.get_value_selected();
+        self.get_value_selected()
     }
 
     /// Prepare state before running a ballot
     fn prepare_next_ballot(&mut self) {
         self.status = PartyStatus::None;
-        self.ballot = self.ballot + 1;
+        self.ballot += 1;
 
         // Clean state
         self.parties_voted_before = HashMap::new();
@@ -217,8 +217,8 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         self.messages_2b_weight = 0;
 
         // Cleaning channels
-        while let Ok(_) = self.event_receiver.try_recv() {}
-        while let Ok(_) = self.msg_in_receiver.try_recv() {}
+        while self.event_receiver.try_recv().is_ok() {}
+        while self.msg_in_receiver.try_recv().is_ok() {}
 
         self.status = PartyStatus::Launched;
     }
@@ -252,9 +252,10 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         }
                     }
 
-                    if !self.parties_voted_before.contains_key(&routing.sender) {
-                        self.parties_voted_before
-                            .insert(routing.sender, msg.last_value_voted);
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        self.parties_voted_before.entry(routing.sender)
+                    {
+                        e.insert(msg.last_value_voted);
                         self.messages_1b_weight +=
                             self.cfg.party_weights[routing.sender as usize] as u128;
 
@@ -365,7 +366,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     .send(MessageWire {
                         content_bytes: serde_json::to_vec(&Message1bContent {
                             ballot: self.ballot,
-                            last_ballot_voted: self.last_ballot_voted.clone(),
+                            last_ballot_voted: self.last_ballot_voted,
                             last_value_voted: self.last_value_voted.clone(),
                         })
                         .unwrap(),
