@@ -1,5 +1,8 @@
 //! Definition of the BPCon errors.
-#[allow(dead_code)]
+#[derive(Debug)]
 pub enum BallotError {
-    // TODO: define errors.
+    MessageParsing(String),
+    InvalidState(String),
+    Communication(String),
+    LeaderElection,
 }
