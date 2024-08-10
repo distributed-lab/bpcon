@@ -859,4 +859,79 @@ mod tests {
         // The cumulative weight (3 + 2) should exceed the threshold of 4
         assert_eq!(party.status, PartyStatus::Passed2b);
     }
+
+    #[test]
+    fn test_follow_event_launch1a() {
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3],
+            threshold: 4,
+            leader: 0,
+        };
+        let (mut party, _msg_out_receiver, _msg_in_sender) =
+            Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector);
+
+        party.status = PartyStatus::Launched;
+        party.ballot = 1;
+
+        party
+            .follow_event(PartyEvent::Launch1a)
+            .expect("Failed to follow Launch1a event");
+
+        // If the party is the leader and in the Launched state, the event should trigger a message.
+        assert_eq!(party.status, PartyStatus::Launched); // Status remains Launched, as no state change expected here
+    }
+
+    #[test]
+    fn test_ballot_reset_after_failure() {
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3],
+            threshold: 4,
+            leader: 0,
+        };
+        let (mut party, _, _) =
+            Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector);
+
+        party.status = PartyStatus::Failed;
+        party.ballot = 1;
+
+        party.prepare_next_ballot();
+
+        // Check that state has been reset
+        assert_eq!(party.status, PartyStatus::Launched);
+        assert_eq!(party.ballot, 2); // Ballot number should have incremented
+        assert!(party.parties_voted_before.is_empty());
+        assert_eq!(party.messages_1b_weight, 0);
+        assert!(party.messages_2av_senders.is_empty());
+        assert_eq!(party.messages_2av_weight, 0);
+        assert!(party.messages_2b_senders.is_empty());
+        assert_eq!(party.messages_2b_weight, 0);
+    }
+
+    #[test]
+    fn test_follow_event_communication_failure() {
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3],
+            threshold: 4,
+            leader: 0,
+        };
+        let (mut party, msg_out_receiver, _) =
+            Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector);
+
+        party.status = PartyStatus::Launched;
+        party.ballot = 1;
+
+        drop(msg_out_receiver); // Drop the receiver to simulate a communication failure
+
+        let result = party.follow_event(PartyEvent::Launch1a);
+
+        match result {
+            Err(BallotError::Communication(err_msg)) => {
+                assert_eq!(
+                    err_msg, "Failed to send Msg1a",
+                    "Expected specific communication error message"
+                );
+            }
+            _ => panic!("Expected BallotError::Communication, got {:?}", result),
+        }
+    }
 }
