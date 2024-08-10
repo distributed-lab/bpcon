@@ -1,10 +1,29 @@
 //! Definition of the BPCon errors.
+
+use std::fmt;
+
 #[derive(Debug)]
 pub enum BallotError {
     MessageParsing(String),
     InvalidState(String),
     Communication(String),
-    LeaderElection,
+}
+
+impl fmt::Display for BallotError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            BallotError::MessageParsing(ref err) => write!(f, "Message parsing error: {}", err),
+            BallotError::InvalidState(ref err) => write!(f, "Invalid state error: {}", err),
+            BallotError::Communication(ref err) => write!(f, "Communication error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for BallotError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // Since these are all simple String errors, there is no underlying source error.
+        None
+    }
 }
 
 #[cfg(test)]
