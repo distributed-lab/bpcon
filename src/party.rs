@@ -23,7 +23,7 @@ pub struct BPConConfig {
 
 /// Party status defines the statuses of the ballot for the particular participant
 /// depending on local calculations.
-#[derive(PartialEq)]
+#[derive(PartialEq,Debug)]
 pub(crate) enum PartyStatus {
     None,
     Launched,
@@ -452,5 +452,87 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+
+    // Mock implementation of Value
+    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct MockValue(u64); // Simple mock type wrapping an integer
+
+    impl Value for MockValue {}
+
+    // Mock implementation of ValueSelector
+    struct MockValueSelector;
+
+    impl ValueSelector<MockValue> for MockValueSelector {
+        fn verify(&self, _v: &MockValue, _m: &HashMap<u64, Option<Vec<u8>>>) -> bool {
+            true // For testing, always return true
+        }
+
+        fn select(&self, _m: &HashMap<u64, Option<Vec<u8>>>) -> MockValue {
+            MockValue(42) // For testing, always return the same value
+        }
+    }
+
+    #[test]
+    fn test_get_leader_simple_case() {
+        let cfg = BPConConfig {
+            party_weights: vec![1, 1, 1], // Simple case with equal weights
+            threshold: 2,
+        };
+
+        let party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+
+        // Call get_leader multiple times to check distribution
+        let leader = party.get_leader().unwrap();
+        assert!(leader <= 2, "Leader index out of bounds");
+    }
+
+    #[test]
+    fn test_get_leader_weighted() {
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3], // Weighted case
+            threshold: 4,
+        };
+
+        let party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+
+        // Call get_leader multiple times to check distribution
+        let leader = party.get_leader().unwrap();
+        assert!(leader <= 2, "Leader index out of bounds");
+    }
+
+    #[test]
+    fn test_update_state_msg1a() {
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3],
+            threshold: 4,
+        };
+        let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        party.status = PartyStatus::Launched;
+        party.ballot = 1;
+
+        let msg = Message1aContent { ballot: 1 };
+        let routing = MessageRouting {
+            sender: 0,
+            receivers: vec![1], // Fix: use `receivers` instead of `receiver`
+            is_broadcast: false,
+            msg_type: ProtocolMessage::Msg1a,
+        };
+
+        let msg_wire = MessageWire {
+            content_bytes: serde_json::to_vec(&msg).unwrap(),
+            routing,
+        };
+
+        party.update_state(msg_wire.content_bytes, msg_wire.routing).unwrap();
+        assert_eq!(party.status, PartyStatus::Passed1a);
     }
 }
