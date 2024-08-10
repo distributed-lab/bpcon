@@ -640,4 +640,223 @@ mod tests {
             .unwrap();
         assert_eq!(party.status, PartyStatus::Passed1a);
     }
+
+    #[test]
+    fn test_update_state_msg1b() {
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3], // Total weight is 6
+            threshold: 4,                 // Threshold is 4
+            leader: 1,
+        };
+        let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        party.status = PartyStatus::Passed1a;
+        party.ballot = 1;
+
+        // First, send a 1b message from party 1 (weight 2)
+        let msg1 = Message1bContent {
+            ballot: 1,
+            last_ballot_voted: Some(0),
+            last_value_voted: Some(vec![1, 2, 3]),
+        };
+        let routing1 = MessageRouting {
+            sender: 1, // Party 1 sends the message
+            receivers: vec![0],
+            is_broadcast: false,
+            msg_type: ProtocolMessage::Msg1b,
+        };
+
+        let msg_wire1 = MessageWire {
+            content_bytes: serde_json::to_vec(&msg1).unwrap(),
+            routing: routing1,
+        };
+
+        party
+            .update_state(msg_wire1.content_bytes, msg_wire1.routing)
+            .unwrap();
+
+        // Now, send a 1b message from party 2 (weight 3)
+        let msg2 = Message1bContent {
+            ballot: 1,
+            last_ballot_voted: Some(0),
+            last_value_voted: Some(vec![1, 2, 3]),
+        };
+        let routing2 = MessageRouting {
+            sender: 2, // Party 2 sends the message
+            receivers: vec![0],
+            is_broadcast: false,
+            msg_type: ProtocolMessage::Msg1b,
+        };
+
+        let msg_wire2 = MessageWire {
+            content_bytes: serde_json::to_vec(&msg2).unwrap(),
+            routing: routing2,
+        };
+
+        party
+            .update_state(msg_wire2.content_bytes, msg_wire2.routing)
+            .unwrap();
+
+        // After both messages, the cumulative weight is 2 + 3 = 5, which exceeds the threshold
+        assert_eq!(party.status, PartyStatus::Passed1b);
+    }
+
+    #[test]
+    fn test_update_state_msg2a() {
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3],
+            threshold: 4,
+            leader: 1,
+        };
+        let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        party.status = PartyStatus::Passed1b;
+        party.ballot = 1;
+
+        let msg = Message2aContent {
+            ballot: 1,
+            value: serde_json::to_vec(&MockValue(42)).unwrap(),
+        };
+        let routing = MessageRouting {
+            sender: 1,
+            receivers: vec![0],
+            is_broadcast: false,
+            msg_type: ProtocolMessage::Msg2a,
+        };
+
+        let msg_wire = MessageWire {
+            content_bytes: serde_json::to_vec(&msg).unwrap(),
+            routing,
+        };
+
+        party
+            .update_state(msg_wire.content_bytes, msg_wire.routing)
+            .unwrap();
+
+        assert_eq!(party.status, PartyStatus::Passed2a);
+    }
+
+    #[test]
+    fn test_update_state_msg2av() {
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3],
+            threshold: 4,
+            leader: 1,
+        };
+        let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        party.status = PartyStatus::Passed2a;
+        party.ballot = 1;
+        party.value_2a = Some(MockValue(42));
+
+        // Send first 2av message from party 2 (weight 3)
+        let msg1 = Message2avContent {
+            ballot: 1,
+            received_value: serde_json::to_vec(&MockValue(42)).unwrap(),
+        };
+        let routing1 = MessageRouting {
+            sender: 2,
+            receivers: vec![0],
+            is_broadcast: false,
+            msg_type: ProtocolMessage::Msg2av,
+        };
+
+        let msg_wire1 = MessageWire {
+            content_bytes: serde_json::to_vec(&msg1).unwrap(),
+            routing: routing1,
+        };
+
+        party
+            .update_state(msg_wire1.content_bytes, msg_wire1.routing)
+            .unwrap();
+
+        // Now send a second 2av message from party 1 (weight 2)
+        let msg2 = Message2avContent {
+            ballot: 1,
+            received_value: serde_json::to_vec(&MockValue(42)).unwrap(),
+        };
+        let routing2 = MessageRouting {
+            sender: 1,
+            receivers: vec![0],
+            is_broadcast: false,
+            msg_type: ProtocolMessage::Msg2av,
+        };
+
+        let msg_wire2 = MessageWire {
+            content_bytes: serde_json::to_vec(&msg2).unwrap(),
+            routing: routing2,
+        };
+
+        party
+            .update_state(msg_wire2.content_bytes, msg_wire2.routing)
+            .unwrap();
+
+        // The cumulative weight (3 + 2) should exceed the threshold of 4
+        assert_eq!(party.status, PartyStatus::Passed2av);
+    }
+
+    #[test]
+    fn test_update_state_msg2b() {
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3],
+            threshold: 4,
+            leader: 1,
+        };
+        let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        party.status = PartyStatus::Passed2av;
+        party.ballot = 1;
+
+        // Simulate that both party 2 and party 1 already sent 2av messages
+        party.messages_2av_senders.insert(2); // Party 2
+        party.messages_2av_senders.insert(1); // Party 1
+        party.messages_2av_weight = 3; // Party 2 weight
+
+        // Send first 2b message from party 2 (weight 3)
+        let msg1 = Message2bContent { ballot: 1 };
+        let routing1 = MessageRouting {
+            sender: 2,
+            receivers: vec![0],
+            is_broadcast: false,
+            msg_type: ProtocolMessage::Msg2b,
+        };
+
+        let msg_wire1 = MessageWire {
+            content_bytes: serde_json::to_vec(&msg1).unwrap(),
+            routing: routing1,
+        };
+
+        party
+            .update_state(msg_wire1.content_bytes, msg_wire1.routing)
+            .unwrap();
+
+        // Print the current state and weight
+        println!(
+            "After first Msg2b: Status = {:?}, 2b Weight = {}",
+            party.status, party.messages_2b_weight
+        );
+
+        // Now send a second 2b message from party 1 (weight 2)
+        let msg2 = Message2bContent { ballot: 1 };
+        let routing2 = MessageRouting {
+            sender: 1,
+            receivers: vec![0],
+            is_broadcast: false,
+            msg_type: ProtocolMessage::Msg2b,
+        };
+
+        let msg_wire2 = MessageWire {
+            content_bytes: serde_json::to_vec(&msg2).unwrap(),
+            routing: routing2,
+        };
+
+        party
+            .update_state(msg_wire2.content_bytes, msg_wire2.routing)
+            .unwrap();
+
+        // Print the current state and weight
+        println!(
+            "After second Msg2b: Status = {:?}, 2b Weight = {}",
+            party.status, party.messages_2b_weight
+        );
+
+        // The cumulative weight (3 + 2) should exceed the threshold of 4
+        assert_eq!(party.status, PartyStatus::Passed2b);
+    }
 }
