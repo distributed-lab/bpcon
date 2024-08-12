@@ -11,6 +11,7 @@ use rand::prelude::*;
 use rand::Rng;
 use std::cmp::PartialEq;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::hash_map::Entry::Vacant;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -22,9 +23,10 @@ pub struct BPConConfig {
 
     /// Threshold weight to define BFT quorum: should be > 2/3 of total weight
     pub threshold: u128,
-    // TODO: define other config fields.
+
     /// Leader of the ballot, computed using seed obtained from config.
     leader: u64,
+    // TODO: define other config fields.
 }
 
 impl BPConConfig {
@@ -106,6 +108,39 @@ pub(crate) enum PartyEvent {
     Finalize,
 }
 
+/// A struct to keep track of senders and the cumulative weight of their messages.
+struct MessageRoundState {
+    senders: HashSet<u64>,
+    weight: u128,
+}
+
+impl MessageRoundState {
+    /// Creates a new instance of `MessageRoundState`.
+    fn new() -> Self {
+        Self {
+            senders: HashSet::new(),
+            weight: 0,
+        }
+    }
+
+    /// Adds a sender and their corresponding weight.
+    fn add_sender(&mut self, sender: u64, weight: u128) {
+        self.senders.insert(sender);
+        self.weight += weight;
+    }
+
+    /// Checks if the sender has already sent a message.
+    fn contains_sender(&self, sender: &u64) -> bool {
+        self.senders.contains(sender)
+    }
+
+    /// Resets the state.
+    fn reset(&mut self) {
+        self.senders.clear();
+        self.weight = 0;
+    }
+}
+
 /// Party of the BPCon protocol that executes ballot.
 ///
 /// The communication between party and external
@@ -160,13 +195,11 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
 
     /// 2av round state
     ///
-    messages_2av_senders: HashSet<u64>,
-    messages_2av_weight: u128,
+    messages_2av_state: MessageRoundState,
 
     /// 2b round state
     ///
-    messages_2b_senders: HashSet<u64>,
-    messages_2b_weight: u128,
+    messages_2b_state: MessageRoundState,
 }
 
 impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
@@ -195,10 +228,8 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 parties_voted_before: HashMap::new(),
                 messages_1b_weight: 0,
                 value_2a: None,
-                messages_2av_senders: HashSet::new(),
-                messages_2av_weight: 0,
-                messages_2b_senders: HashSet::new(),
-                messages_2b_weight: 0,
+                messages_2av_state: MessageRoundState::new(),
+                messages_2b_state: MessageRoundState::new(),
             },
             msg_out_receiver,
             msg_in_sender,
@@ -251,48 +282,41 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
             }
 
             // TODO: Emit events to run ballot protocol according to the ballot configuration
-            if self.event_sender.send(PartyEvent::Launch1a).is_err() {
+            self.event_sender.send(PartyEvent::Launch1a).map_err(|_| {
                 self.status = PartyStatus::Failed;
-                return Err(BallotError::Communication(
-                    "Failed to send Launch1a event".into(),
-                ));
-            }
-            if self.event_sender.send(PartyEvent::Launch1b).is_err() {
+                BallotError::Communication("Failed to send Launch1a event".into())
+            })?;
+
+            self.event_sender.send(PartyEvent::Launch1b).map_err(|_| {
                 self.status = PartyStatus::Failed;
-                return Err(BallotError::Communication(
-                    "Failed to send Launch1b event".into(),
-                ));
-            }
-            if self.event_sender.send(PartyEvent::Launch2a).is_err() {
+                BallotError::Communication("Failed to send Launch1b event".into())
+            })?;
+
+            self.event_sender.send(PartyEvent::Launch2a).map_err(|_| {
                 self.status = PartyStatus::Failed;
-                return Err(BallotError::Communication(
-                    "Failed to send Launch2a event".into(),
-                ));
-            }
-            if self.event_sender.send(PartyEvent::Launch2av).is_err() {
+                BallotError::Communication("Failed to send Launch2a event".into())
+            })?;
+
+            self.event_sender.send(PartyEvent::Launch2av).map_err(|_| {
                 self.status = PartyStatus::Failed;
-                return Err(BallotError::Communication(
-                    "Failed to send Launch2av event".into(),
-                ));
-            }
-            if self.event_sender.send(PartyEvent::Launch2b).is_err() {
+                BallotError::Communication("Failed to send Launch2av event".into())
+            })?;
+
+            self.event_sender.send(PartyEvent::Launch2b).map_err(|_| {
                 self.status = PartyStatus::Failed;
-                return Err(BallotError::Communication(
-                    "Failed to send Launch2b event".into(),
-                ));
-            }
-            if self.event_sender.send(PartyEvent::Finalize).is_err() {
+                BallotError::Communication("Failed to send Launch2b event".into())
+            })?;
+
+            self.event_sender.send(PartyEvent::Finalize).map_err(|_| {
                 self.status = PartyStatus::Failed;
-                return Err(BallotError::Communication(
-                    "Failed to send Finalize event".into(),
-                ));
-            }
+                BallotError::Communication("Failed to send Finalize event".into())
+            })?;
         }
 
         Ok(self.get_value_selected())
     }
 
-    /// Prepare state before running a ballot
+    /// Prepare state before running a ballot.
     fn prepare_next_ballot(&mut self) {
         self.status = PartyStatus::None;
         self.ballot += 1;
@@ -301,10 +325,8 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         self.parties_voted_before = HashMap::new();
         self.messages_1b_weight = 0;
         self.value_2a = None;
-        self.messages_2av_senders = HashSet::new();
-        self.messages_2av_weight = 0;
-        self.messages_2b_senders = HashSet::new();
-        self.messages_2b_weight = 0;
+        self.messages_2av_state.reset();
+        self.messages_2b_state.reset();
 
         // Cleaning channels
         while self.event_receiver.try_recv().is_ok() {}
@@ -350,10 +372,9 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     }
                 }
 
-                if let std::collections::hash_map::Entry::Vacant(e) =
-                    self.parties_voted_before.entry(routing.sender)
-                {
+                if let Vacant(e) = self.parties_voted_before.entry(routing.sender) {
                     e.insert(msg.last_value_voted);
+
                     self.messages_1b_weight +=
                         self.cfg.party_weights[routing.sender as usize] as u128;
 
@@ -414,12 +435,13 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     ));
                 }
 
-                if !self.messages_2av_senders.contains(&routing.sender) {
-                    self.messages_2av_senders.insert(routing.sender);
-                    self.messages_2av_weight +=
-                        self.cfg.party_weights[routing.sender as usize] as u128;
+                if !self.messages_2av_state.contains_sender(&routing.sender) {
+                    self.messages_2av_state.add_sender(
+                        routing.sender,
+                        self.cfg.party_weights[routing.sender as usize] as u128,
+                    );
 
-                    if self.messages_2av_weight > self.cfg.threshold {
+                    if self.messages_2av_state.weight > self.cfg.threshold {
                         self.status = PartyStatus::Passed2av;
                     }
                 }
@@ -434,14 +456,15 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     ));
                 }
 
-                if self.messages_2av_senders.contains(&routing.sender)
-                    && !self.messages_2b_senders.contains(&routing.sender)
+                if self.messages_2av_state.contains_sender(&routing.sender)
+                    && !self.messages_2b_state.contains_sender(&routing.sender)
                 {
-                    self.messages_2b_senders.insert(routing.sender);
-                    self.messages_2b_weight +=
-                        self.cfg.party_weights[routing.sender as usize] as u128;
+                    self.messages_2b_state.add_sender(
+                        routing.sender,
+                        self.cfg.party_weights[routing.sender as usize] as u128,
+                    );
 
-                    if self.messages_2b_weight > self.cfg.threshold {
+                    if self.messages_2b_state.weight > self.cfg.threshold {
                         self.status = PartyStatus::Passed2b;
                     }
                 }
@@ -826,9 +849,8 @@ mod tests {
         party.ballot = 1;
 
         // Simulate that both party 2 and party 1 already sent 2av messages
-        party.messages_2av_senders.insert(2); // Party 2
-        party.messages_2av_senders.insert(1); // Party 1
-        party.messages_2av_weight = 3; // Party 2 weight
+        party.messages_2av_state.add_sender(1, 1);
+        party.messages_2av_state.add_sender(2, 2);
 
         // Send first 2b message from party 2 (weight 3)
         let msg1 = Message2bContent { ballot: 1 };
@@ -851,7 +873,7 @@ mod tests {
         // Print the current state and weight
         println!(
             "After first Msg2b: Status = {:?}, 2b Weight = {}",
-            party.status, party.messages_2b_weight
+            party.status, party.messages_2b_state.weight
         );
 
         // Now send a second 2b message from party 1 (weight 2)
@@ -875,7 +897,7 @@ mod tests {
         // Print the current state and weight
         println!(
             "After second Msg2b: Status = {:?}, 2b Weight = {}",
-            party.status, party.messages_2b_weight
+            party.status, party.messages_2b_state.weight
         );
 
         // The cumulative weight (3 + 2) should exceed the threshold of 4
@@ -923,10 +945,10 @@ mod tests {
         assert_eq!(party.ballot, 2); // Ballot number should have incremented
         assert!(party.parties_voted_before.is_empty());
         assert_eq!(party.messages_1b_weight, 0);
-        assert!(party.messages_2av_senders.is_empty());
-        assert_eq!(party.messages_2av_weight, 0);
-        assert!(party.messages_2b_senders.is_empty());
-        assert_eq!(party.messages_2b_weight, 0);
+        assert!(party.messages_2av_state.senders.is_empty());
+        assert_eq!(party.messages_2av_state.weight, 0);
+        assert!(party.messages_2b_state.senders.is_empty());
+        assert_eq!(party.messages_2b_state.weight, 0);
     }
 
     #[test]
