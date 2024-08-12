@@ -9,6 +9,7 @@ use crate::{Value, ValueSelector};
 use rand::prelude::StdRng;
 use rand::prelude::*;
 use rand::Rng;
+use rkyv::{AlignedVec, Deserialize, Infallible};
 use std::cmp::PartialEq;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::hash_map::Entry::Vacant;
@@ -180,13 +181,13 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     last_ballot_voted: Option<u64>,
 
     /// Last value for which party submitted 2b message
-    last_value_voted: Option<Vec<u8>>,
+    last_value_voted: Option<V>,
 
     /// Local round fields
 
     /// 1b round state
     ///
-    parties_voted_before: HashMap<u64, Option<Vec<u8>>>, // id <-> value
+    parties_voted_before: HashMap<u64, Option<V>>, // id <-> value
     messages_1b_weight: u128,
 
     /// 2a round state
@@ -336,11 +337,18 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     }
 
     /// Update party's state based on message type.
-    fn update_state(&mut self, m: Vec<u8>, routing: MessageRouting) -> Result<(), BallotError> {
+    fn update_state(&mut self, m: AlignedVec, routing: MessageRouting) -> Result<(), BallotError> {
         match routing.msg_type {
             ProtocolMessage::Msg1a => {
-                let msg: Message1aContent = serde_json::from_slice(m.as_slice())
-                    .map_err(|_| BallotError::MessageParsing("Failed to parse Msg1a".into()))?;
+                let archived =
+                    rkyv::check_archived_root::<Message1aContent>(&m[..]).map_err(|err| {
+                        BallotError::MessageParsing(format!("Validation error: {:?}", err))
+                    })?;
+
+                let msg: Message1aContent =
+                    archived.deserialize(&mut Infallible).map_err(|err| {
+                        BallotError::MessageParsing(format!("Deserialization error: {:?}", err))
+                    })?;
 
                 if msg.ballot != self.ballot {
                     return Err(BallotError::InvalidState(
@@ -355,8 +363,15 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 self.status = PartyStatus::Passed1a;
             }
             ProtocolMessage::Msg1b => {
-                let msg: Message1bContent = serde_json::from_slice(m.as_slice())
-                    .map_err(|_| BallotError::MessageParsing("Failed to parse Msg1b".into()))?;
+                let archived =
+                    rkyv::check_archived_root::<Message1bContent>(&m[..]).map_err(|err| {
+                        BallotError::MessageParsing(format!("Validation error: {:?}", err))
+                    })?;
+
+                let msg: Message1bContent =
+                    archived.deserialize(&mut Infallible).map_err(|err| {
+                        BallotError::MessageParsing(format!("Deserialization error: {:?}", err))
+                    })?;
 
                 if msg.ballot != self.ballot {
                     return Err(BallotError::InvalidState(
@@ -373,7 +388,14 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
 
                 if let Vacant(e) = self.parties_voted_before.entry(routing.sender) {
-                    e.insert(msg.last_value_voted);
+                    let value: Option<V> = match msg.last_value_voted {
+                        Some(ref data) => Some(bincode::deserialize(data).map_err(|err| {
+                            BallotError::ValueParsing(format!("Deserialization error: {:?}", err))
+                        })?),
+                        None => None,
+                    };
+
+                    e.insert(value);
 
                     self.messages_1b_weight +=
                         self.cfg.party_weights[routing.sender as usize] as u128;
@@ -384,8 +406,15 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
             }
             ProtocolMessage::Msg2a => {
-                let msg: Message2aContent = serde_json::from_slice(m.as_slice())
-                    .map_err(|_| BallotError::MessageParsing("Failed to parse Msg2a".into()))?;
+                let archived =
+                    rkyv::check_archived_root::<Message2aContent>(&m[..]).map_err(|err| {
+                        BallotError::MessageParsing(format!("Validation error: {:?}", err))
+                    })?;
+
+                let msg: Message2aContent =
+                    archived.deserialize(&mut Infallible).map_err(|err| {
+                        BallotError::MessageParsing(format!("Deserialization error: {:?}", err))
+                    })?;
 
                 if msg.ballot != self.ballot {
                     return Err(BallotError::InvalidState(
@@ -397,10 +426,9 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     return Err(BallotError::InvalidState("Invalid leader in Msg2a".into()));
                 }
 
-                let value_received: V =
-                    serde_json::from_slice(msg.value.as_slice()).map_err(|_| {
-                        BallotError::MessageParsing("Failed to parse value in Msg2a".into())
-                    })?;
+                let value_received = bincode::deserialize(&msg.value[..]).map_err(|err| {
+                    BallotError::ValueParsing(format!("Failed to parse value in Msg2a: {:?}", err))
+                })?;
 
                 if self
                     .value_selector
@@ -415,18 +443,27 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
             }
             ProtocolMessage::Msg2av => {
-                let msg: Message2avContent = serde_json::from_slice(m.as_slice())
-                    .map_err(|_| BallotError::MessageParsing("Failed to parse Msg2av".into()))?;
+                let archived =
+                    rkyv::check_archived_root::<Message2avContent>(&m[..]).map_err(|err| {
+                        BallotError::MessageParsing(format!("Validation error: {:?}", err))
+                    })?;
+
+                let msg: Message2avContent =
+                    archived.deserialize(&mut Infallible).map_err(|err| {
+                        BallotError::MessageParsing(format!("Deserialization error: {:?}", err))
+                    })?;
 
                 if msg.ballot != self.ballot {
                     return Err(BallotError::InvalidState(
                         "Ballot number mismatch in Msg2av".into(),
                     ));
                 }
-
-                let value_received: V = serde_json::from_slice(msg.received_value.as_slice())
-                    .map_err(|_| {
-                        BallotError::MessageParsing("Failed to parse value in Msg2av".into())
+                let value_received: V =
+                    bincode::deserialize(&msg.received_value[..]).map_err(|err| {
+                        BallotError::ValueParsing(format!(
+                            "Failed to parse value in Msg2av: {:?}",
+                            err
+                        ))
                     })?;
 
                 if value_received != self.value_2a.clone().unwrap() {
@@ -447,8 +484,15 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
             }
             ProtocolMessage::Msg2b => {
-                let msg: Message2bContent = serde_json::from_slice(m.as_slice())
-                    .map_err(|_| BallotError::MessageParsing("Failed to parse Msg2b".into()))?;
+                let archived =
+                    rkyv::check_archived_root::<Message2bContent>(&m[..]).map_err(|err| {
+                        BallotError::MessageParsing(format!("Validation error: {:?}", err))
+                    })?;
+
+                let msg: Message2bContent =
+                    archived.deserialize(&mut Infallible).map_err(|err| {
+                        BallotError::MessageParsing(format!("Deserialization error: {:?}", err))
+                    })?;
 
                 if msg.ballot != self.ballot {
                     return Err(BallotError::InvalidState(
@@ -485,7 +529,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 if self.cfg.leader == self.id {
                     self.msg_out_sender
                         .send(MessageWire {
-                            content_bytes: serde_json::to_vec(&Message1aContent {
+                            content_bytes: rkyv::to_bytes::<_, 256>(&Message1aContent {
                                 ballot: self.ballot,
                             })
                             .map_err(|_| {
@@ -504,10 +548,20 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
                 self.msg_out_sender
                     .send(MessageWire {
-                        content_bytes: serde_json::to_vec(&Message1bContent {
+                        content_bytes: rkyv::to_bytes::<_, 256>(&Message1bContent {
                             ballot: self.ballot,
                             last_ballot_voted: self.last_ballot_voted,
-                            last_value_voted: self.last_value_voted.clone(),
+                            last_value_voted: self
+                                .last_value_voted
+                                .clone()
+                                .map(|inner_data| {
+                                    bincode::serialize(&inner_data).map_err(|_| {
+                                        BallotError::ValueParsing(
+                                            "Failed to serialize value".into(),
+                                        )
+                                    })
+                                })
+                                .transpose()?,
                         })
                         .map_err(|_| {
                             BallotError::MessageParsing("Failed to serialize Msg1b".into())
@@ -525,12 +579,10 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 if self.cfg.leader == self.id {
                     self.msg_out_sender
                         .send(MessageWire {
-                            content_bytes: serde_json::to_vec(&Message2aContent {
+                            content_bytes: rkyv::to_bytes::<_, 256>(&Message2aContent {
                                 ballot: self.ballot,
-                                value: serde_json::to_vec(&self.get_value()).map_err(|_| {
-                                    BallotError::MessageParsing(
-                                        "Failed to serialize value for Msg2a".into(),
-                                    )
+                                value: bincode::serialize(&self.get_value()).map_err(|_| {
+                                    BallotError::ValueParsing("Failed to serialize value".into())
                                 })?,
                             })
                             .map_err(|_| {
@@ -549,14 +601,11 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
                 self.msg_out_sender
                     .send(MessageWire {
-                        content_bytes: serde_json::to_vec(&Message2avContent {
+                        content_bytes: rkyv::to_bytes::<_, 256>(&Message2avContent {
                             ballot: self.ballot,
-                            received_value: serde_json::to_vec(&self.value_2a.clone().unwrap())
-                                .map_err(|_| {
-                                    BallotError::MessageParsing(
-                                        "Failed to serialize value for Msg2av".into(),
-                                    )
-                                })?,
+                            received_value: bincode::serialize(&self.value_2a.clone()).map_err(
+                                |_| BallotError::ValueParsing("Failed to serialize value".into()),
+                            )?,
                         })
                         .map_err(|_| {
                             BallotError::MessageParsing("Failed to serialize Msg2av".into())
@@ -573,7 +622,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
                 self.msg_out_sender
                     .send(MessageWire {
-                        content_bytes: serde_json::to_vec(&Message2bContent {
+                        content_bytes: rkyv::to_bytes::<_, 256>(&Message2bContent {
                             ballot: self.ballot,
                         })
                         .map_err(|_| {
@@ -600,11 +649,10 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
 mod tests {
     use super::*;
 
-    use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
     // Mock implementation of Value
-    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     struct MockValue(u64); // Simple mock type wrapping an integer
 
     impl Value for MockValue {}
@@ -613,11 +661,11 @@ mod tests {
     struct MockValueSelector;
 
     impl ValueSelector<MockValue> for MockValueSelector {
-        fn verify(&self, _v: &MockValue, _m: &HashMap<u64, Option<Vec<u8>>>) -> bool {
+        fn verify(&self, _v: &MockValue, _m: &HashMap<u64, Option<MockValue>>) -> bool {
             true // For testing, always return true
         }
 
-        fn select(&self, _m: &HashMap<u64, Option<Vec<u8>>>) -> MockValue {
+        fn select(&self, _m: &HashMap<u64, Option<MockValue>>) -> MockValue {
             MockValue(42) // For testing, always return the same value
         }
     }
@@ -676,7 +724,7 @@ mod tests {
         };
 
         let msg_wire = MessageWire {
-            content_bytes: serde_json::to_vec(&msg).unwrap(),
+            content_bytes: rkyv::to_bytes::<_, 256>(&msg).unwrap(),
             routing,
         };
 
@@ -701,7 +749,7 @@ mod tests {
         let msg1 = Message1bContent {
             ballot: 1,
             last_ballot_voted: Some(0),
-            last_value_voted: Some(vec![1, 2, 3]),
+            last_value_voted: bincode::serialize(&MockValue(42)).ok(),
         };
         let routing1 = MessageRouting {
             sender: 1, // Party 1 sends the message
@@ -711,7 +759,7 @@ mod tests {
         };
 
         let msg_wire1 = MessageWire {
-            content_bytes: serde_json::to_vec(&msg1).unwrap(),
+            content_bytes: rkyv::to_bytes::<_, 256>(&msg1).unwrap(),
             routing: routing1,
         };
 
@@ -723,7 +771,7 @@ mod tests {
         let msg2 = Message1bContent {
             ballot: 1,
             last_ballot_voted: Some(0),
-            last_value_voted: Some(vec![1, 2, 3]),
+            last_value_voted: bincode::serialize(&MockValue(42)).ok(),
         };
         let routing2 = MessageRouting {
             sender: 2, // Party 2 sends the message
@@ -733,7 +781,7 @@ mod tests {
         };
 
         let msg_wire2 = MessageWire {
-            content_bytes: serde_json::to_vec(&msg2).unwrap(),
+            content_bytes: rkyv::to_bytes::<_, 256>(&msg2).unwrap(),
             routing: routing2,
         };
 
@@ -758,7 +806,7 @@ mod tests {
 
         let msg = Message2aContent {
             ballot: 1,
-            value: serde_json::to_vec(&MockValue(42)).unwrap(),
+            value: bincode::serialize(&MockValue(42)).unwrap(),
         };
         let routing = MessageRouting {
             sender: 1,
@@ -768,7 +816,7 @@ mod tests {
         };
 
         let msg_wire = MessageWire {
-            content_bytes: serde_json::to_vec(&msg).unwrap(),
+            content_bytes: rkyv::to_bytes::<_, 256>(&msg).unwrap(),
             routing,
         };
 
@@ -794,7 +842,7 @@ mod tests {
         // Send first 2av message from party 2 (weight 3)
         let msg1 = Message2avContent {
             ballot: 1,
-            received_value: serde_json::to_vec(&MockValue(42)).unwrap(),
+            received_value: bincode::serialize(&MockValue(42)).unwrap(),
         };
         let routing1 = MessageRouting {
             sender: 2,
@@ -804,7 +852,7 @@ mod tests {
         };
 
         let msg_wire1 = MessageWire {
-            content_bytes: serde_json::to_vec(&msg1).unwrap(),
+            content_bytes: rkyv::to_bytes::<_, 256>(&msg1).unwrap(),
             routing: routing1,
         };
 
@@ -815,7 +863,7 @@ mod tests {
         // Now send a second 2av message from party 1 (weight 2)
         let msg2 = Message2avContent {
             ballot: 1,
-            received_value: serde_json::to_vec(&MockValue(42)).unwrap(),
+            received_value: bincode::serialize(&MockValue(42)).unwrap(),
         };
         let routing2 = MessageRouting {
             sender: 1,
@@ -825,7 +873,7 @@ mod tests {
         };
 
         let msg_wire2 = MessageWire {
-            content_bytes: serde_json::to_vec(&msg2).unwrap(),
+            content_bytes: rkyv::to_bytes::<_, 256>(&msg2).unwrap(),
             routing: routing2,
         };
 
@@ -862,7 +910,7 @@ mod tests {
         };
 
         let msg_wire1 = MessageWire {
-            content_bytes: serde_json::to_vec(&msg1).unwrap(),
+            content_bytes: rkyv::to_bytes::<_, 256>(&msg1).unwrap(),
             routing: routing1,
         };
 
@@ -886,7 +934,7 @@ mod tests {
         };
 
         let msg_wire2 = MessageWire {
-            content_bytes: serde_json::to_vec(&msg2).unwrap(),
+            content_bytes: rkyv::to_bytes::<_, 256>(&msg2).unwrap(),
             routing: routing2,
         };
 

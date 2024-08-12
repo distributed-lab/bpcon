@@ -1,11 +1,11 @@
 //! Definition of the BPCon messages.
 
-use serde::{Deserialize, Serialize};
+use rkyv::{AlignedVec, Archive, Deserialize, Serialize};
 
 /// Message ready for transfer.
 pub struct MessageWire {
     /// Serialized message contents.
-    pub content_bytes: Vec<u8>,
+    pub content_bytes: AlignedVec,
     /// Routing information.
     pub routing: MessageRouting,
 }
@@ -31,31 +31,44 @@ pub enum ProtocolMessage {
     Msg2b,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+// Value in messages is stored in serialized format, i.e bytes in order to omit
+// strict restriction for `Value` trait to be [de]serializable only with `rkyv`.
+
+#[derive(Archive, Deserialize, Serialize, Debug, Clone)]
+#[archive(compare(PartialEq), check_bytes)]
+#[archive_attr(derive(Debug))]
 pub struct Message1aContent {
     pub ballot: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Archive, Deserialize, Serialize, Debug, Clone)]
+#[archive(compare(PartialEq), check_bytes)]
+#[archive_attr(derive(Debug))]
 pub struct Message1bContent {
     pub ballot: u64,
     pub last_ballot_voted: Option<u64>,
     pub last_value_voted: Option<Vec<u8>>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Archive, Deserialize, Serialize, Debug, Clone)]
+#[archive(compare(PartialEq), check_bytes)]
+#[archive_attr(derive(Debug))]
 pub struct Message2aContent {
     pub ballot: u64,
     pub value: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Archive, Deserialize, Serialize, Debug, Clone)]
+#[archive(compare(PartialEq), check_bytes)]
+#[archive_attr(derive(Debug))]
 pub struct Message2avContent {
     pub ballot: u64,
     pub received_value: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Archive, Deserialize, Serialize, Debug, Clone)]
+#[archive(compare(PartialEq), check_bytes)]
+#[archive_attr(derive(Debug))]
 pub struct Message2bContent {
     pub ballot: u64,
 }

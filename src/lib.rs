@@ -14,10 +14,10 @@ pub trait Value: Eq + Serialize + for<'a> Deserialize<'a> + Clone {}
 /// Party can not vote for different values, even in different ballots.
 pub trait ValueSelector<V: Value> {
     /// Verifies if a value is selected correctly. Accepts 2b messages from parties.
-    fn verify(&self, v: &V, m: &HashMap<u64, Option<Vec<u8>>>) -> bool;
+    fn verify(&self, v: &V, m: &HashMap<u64, Option<V>>) -> bool;
 
     /// Select value depending on inner conditions. Accepts 2b messages from parties.
-    fn select(&self, m: &HashMap<u64, Option<Vec<u8>>>) -> V;
+    fn select(&self, m: &HashMap<u64, Option<V>>) -> V;
 
     // TODO: add other fields to update selector state.
 }

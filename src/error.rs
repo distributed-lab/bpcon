@@ -5,6 +5,7 @@ use std::fmt;
 #[derive(Debug)]
 pub enum BallotError {
     MessageParsing(String),
+    ValueParsing(String),
     InvalidState(String),
     Communication(String),
     LeaderElection(String),
@@ -14,6 +15,7 @@ impl fmt::Display for BallotError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             BallotError::MessageParsing(ref err) => write!(f, "Message parsing error: {}", err),
+            BallotError::ValueParsing(ref err) => write!(f, "Value parsing error: {}", err),
             BallotError::InvalidState(ref err) => write!(f, "Invalid state error: {}", err),
             BallotError::Communication(ref err) => write!(f, "Communication error: {}", err),
             BallotError::LeaderElection(ref err) => write!(f, "Leader election error: {}", err),
