@@ -3,7 +3,7 @@
 use crate::error::BallotError;
 use crate::message::{
     Message1aContent, Message1bContent, Message2aContent, Message2avContent, Message2bContent,
-    MessageRouting, MessageWire, ProtocolMessage,
+    MessagePacket, MessageRouting, ProtocolMessage,
 };
 use crate::{Value, ValueSelector};
 use rand::prelude::StdRng;
@@ -158,8 +158,8 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     pub id: u64,
 
     /// Communication queues.
-    msg_in_receiver: Receiver<MessageWire>,
-    msg_out_sender: Sender<MessageWire>,
+    msg_in_receiver: Receiver<MessagePacket>,
+    msg_out_sender: Sender<MessagePacket>,
 
     /// Query to receive and send events that run ballot protocol
     event_receiver: Receiver<PartyEvent>,
@@ -208,7 +208,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         id: u64,
         cfg: BPConConfig,
         value_selector: VS,
-    ) -> (Self, Receiver<MessageWire>, Sender<MessageWire>) {
+    ) -> (Self, Receiver<MessagePacket>, Sender<MessagePacket>) {
         let (event_sender, event_receiver) = channel();
         let (msg_in_sender, msg_in_receiver) = channel();
         let (msg_out_sender, msg_out_receiver) = channel();
@@ -528,7 +528,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
                 if self.cfg.leader == self.id {
                     self.msg_out_sender
-                        .send(MessageWire {
+                        .send(MessagePacket {
                             content_bytes: rkyv::to_bytes::<_, 256>(&Message1aContent {
                                 ballot: self.ballot,
                             })
@@ -547,7 +547,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     ));
                 }
                 self.msg_out_sender
-                    .send(MessageWire {
+                    .send(MessagePacket {
                         content_bytes: rkyv::to_bytes::<_, 256>(&Message1bContent {
                             ballot: self.ballot,
                             last_ballot_voted: self.last_ballot_voted,
@@ -578,7 +578,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
                 if self.cfg.leader == self.id {
                     self.msg_out_sender
-                        .send(MessageWire {
+                        .send(MessagePacket {
                             content_bytes: rkyv::to_bytes::<_, 256>(&Message2aContent {
                                 ballot: self.ballot,
                                 value: bincode::serialize(&self.get_value()).map_err(|_| {
@@ -600,7 +600,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     ));
                 }
                 self.msg_out_sender
-                    .send(MessageWire {
+                    .send(MessagePacket {
                         content_bytes: rkyv::to_bytes::<_, 256>(&Message2avContent {
                             ballot: self.ballot,
                             received_value: bincode::serialize(&self.value_2a.clone()).map_err(
@@ -621,7 +621,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     ));
                 }
                 self.msg_out_sender
-                    .send(MessageWire {
+                    .send(MessagePacket {
                         content_bytes: rkyv::to_bytes::<_, 256>(&Message2bContent {
                             ballot: self.ballot,
                         })
@@ -723,7 +723,7 @@ mod tests {
             msg_type: ProtocolMessage::Msg1a,
         };
 
-        let msg_wire = MessageWire {
+        let msg_wire = MessagePacket {
             content_bytes: rkyv::to_bytes::<_, 256>(&msg).unwrap(),
             routing,
         };
@@ -758,7 +758,7 @@ mod tests {
             msg_type: ProtocolMessage::Msg1b,
         };
 
-        let msg_wire1 = MessageWire {
+        let msg_wire1 = MessagePacket {
             content_bytes: rkyv::to_bytes::<_, 256>(&msg1).unwrap(),
             routing: routing1,
         };
@@ -780,7 +780,7 @@ mod tests {
             msg_type: ProtocolMessage::Msg1b,
         };
 
-        let msg_wire2 = MessageWire {
+        let msg_wire2 = MessagePacket {
             content_bytes: rkyv::to_bytes::<_, 256>(&msg2).unwrap(),
             routing: routing2,
         };
@@ -815,7 +815,7 @@ mod tests {
             msg_type: ProtocolMessage::Msg2a,
         };
 
-        let msg_wire = MessageWire {
+        let msg_wire = MessagePacket {
             content_bytes: rkyv::to_bytes::<_, 256>(&msg).unwrap(),
             routing,
         };
@@ -851,7 +851,7 @@ mod tests {
             msg_type: ProtocolMessage::Msg2av,
         };
 
-        let msg_wire1 = MessageWire {
+        let msg_wire1 = MessagePacket {
             content_bytes: rkyv::to_bytes::<_, 256>(&msg1).unwrap(),
             routing: routing1,
         };
@@ -872,7 +872,7 @@ mod tests {
             msg_type: ProtocolMessage::Msg2av,
         };
 
-        let msg_wire2 = MessageWire {
+        let msg_wire2 = MessagePacket {
             content_bytes: rkyv::to_bytes::<_, 256>(&msg2).unwrap(),
             routing: routing2,
         };
@@ -909,7 +909,7 @@ mod tests {
             msg_type: ProtocolMessage::Msg2b,
         };
 
-        let msg_wire1 = MessageWire {
+        let msg_wire1 = MessagePacket {
             content_bytes: rkyv::to_bytes::<_, 256>(&msg1).unwrap(),
             routing: routing1,
         };
@@ -933,7 +933,7 @@ mod tests {
             msg_type: ProtocolMessage::Msg2b,
         };
 
-        let msg_wire2 = MessageWire {
+        let msg_wire2 = MessagePacket {
             content_bytes: rkyv::to_bytes::<_, 256>(&msg2).unwrap(),
             routing: routing2,
         };

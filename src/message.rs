@@ -3,7 +3,7 @@
 use rkyv::{AlignedVec, Archive, Deserialize, Serialize};
 
 /// Message ready for transfer.
-pub struct MessageWire {
+pub struct MessagePacket {
     /// Serialized message contents.
     pub content_bytes: AlignedVec,
     /// Routing information.
