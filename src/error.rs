@@ -7,6 +7,7 @@ pub enum BallotError {
     MessageParsing(String),
     InvalidState(String),
     Communication(String),
+    LeaderElection(String),
 }
 
 impl fmt::Display for BallotError {
@@ -15,6 +16,7 @@ impl fmt::Display for BallotError {
             BallotError::MessageParsing(ref err) => write!(f, "Message parsing error: {}", err),
             BallotError::InvalidState(ref err) => write!(f, "Invalid state error: {}", err),
             BallotError::Communication(ref err) => write!(f, "Communication error: {}", err),
+            BallotError::LeaderElection(ref err) => write!(f, "Leader election error: {}", err),
         }
     }
 }

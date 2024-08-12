@@ -6,9 +6,13 @@ use crate::message::{
     MessageRouting, MessageWire, ProtocolMessage,
 };
 use crate::{Value, ValueSelector};
+use rand::prelude::StdRng;
+use rand::prelude::*;
 use rand::Rng;
 use std::cmp::PartialEq;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 /// BPCon configuration. Includes ballot time bounds and other stuff.
@@ -18,8 +22,62 @@ pub struct BPConConfig {
 
     /// Threshold weight to define BFT quorum: should be > 2/3 of total weight
     pub threshold: u128,
-    pub leader: u64,
     // TODO: define other config fields.
+    /// Leader of the ballot, computed using seed obtained from config.
+    leader: u64,
+}
+
+impl BPConConfig {
+    /// Create new config instance.
+    pub fn new(party_weights: Vec<u64>, threshold: u128) -> Self {
+        let mut cfg = Self {
+            party_weights,
+            threshold,
+            leader: 0,
+        };
+        cfg.leader = cfg.compute_leader().unwrap();
+
+        cfg
+    }
+
+    /// Compute leader in a weighed randomized manner.
+    /// Uses seed from the config, making it deterministic.
+    fn compute_leader(&self) -> Result<u64, BallotError> {
+        let seed = self.compute_seed();
+
+        let total_weight: u64 = self.party_weights.iter().sum();
+        if total_weight == 0 {
+            return Err(BallotError::LeaderElection("Zero weight sum".into()));
+        }
+
+        // Use the seed from the config to create a deterministic random number generator.
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        let random_value: u64 = rng.gen_range(0..total_weight);
+
+        let mut cumulative_weight = 0;
+        for (i, &weight) in self.party_weights.iter().enumerate() {
+            cumulative_weight += weight;
+            if random_value < cumulative_weight {
+                return Ok(i as u64);
+            }
+        }
+        Err(BallotError::LeaderElection("Election failed".into()))
+    }
+
+    /// Compute seed for randomized leader election.
+    fn compute_seed(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+
+        // Hash each field that should contribute to the seed
+        self.party_weights.hash(&mut hasher);
+        self.threshold.hash(&mut hasher);
+
+        // You can add more fields as needed
+
+        // Generate the seed from the hash
+        hasher.finish()
+    }
 }
 
 /// Party status defines the statuses of the ballot for the particular participant
@@ -109,46 +167,6 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     ///
     messages_2b_senders: HashSet<u64>,
     messages_2b_weight: u128,
-}
-
-#[derive(Debug)]
-pub enum LeaderElectionError {
-    ZeroWeightSum,
-    ElectionFailed,
-}
-
-impl std::fmt::Display for LeaderElectionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match *self {
-            LeaderElectionError::ZeroWeightSum => {
-                write!(f, "party weights sum must be positive value")
-            }
-            LeaderElectionError::ElectionFailed => write!(f, "leader election failed"),
-        }
-    }
-}
-
-impl std::error::Error for LeaderElectionError {}
-
-/// Compute leader in a weighed randomized manner.
-/// Use this function for inter-ballot instantiation of config.
-pub fn compute_leader(party_weights: Vec<u64>) -> Result<u64, LeaderElectionError> {
-    let total_weight: u64 = party_weights.iter().sum();
-    if total_weight == 0 {
-        return Err(LeaderElectionError::ZeroWeightSum);
-    }
-
-    let mut rng = rand::thread_rng();
-    let random_value: u64 = rng.gen_range(0..total_weight);
-
-    let mut cumulative_weight = 0;
-    for (i, &weight) in party_weights.iter().enumerate() {
-        cumulative_weight += weight;
-        if random_value < cumulative_weight {
-            return Ok(i as u64);
-        }
-    }
-    Err(LeaderElectionError::ElectionFailed)
 }
 
 impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
@@ -582,33 +600,37 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_leader_weighted_case() {
+    fn test_compute_leader_determinism() {
         let party_weights = vec![1, 2, 7]; // Weighted case
+        let threshold = 7; // example threshold
 
-        let mut leader_counts = vec![0; 3];
-        let iterations = 10_000;
+        // Initialize the configuration once
+        let config = BPConConfig::new(party_weights.clone(), threshold);
 
-        for _ in 0..iterations {
-            let leader = compute_leader(party_weights.clone()).unwrap();
-            leader_counts[leader as usize] += 1;
-        }
+        // Compute the leader multiple times
+        let leader1 = config.compute_leader().unwrap();
+        let leader2 = config.compute_leader().unwrap();
+        let leader3 = config.compute_leader().unwrap();
 
-        // With 1:2:7 weights, the third party (index 2) should be selected the most frequently
-        println!("Leader selection counts: {:?}", leader_counts);
-
-        assert!(leader_counts[2] > leader_counts[1]);
-        assert!(leader_counts[1] > leader_counts[0]);
+        // All leaders should be the same due to deterministic seed
+        assert_eq!(
+            leader1, leader2,
+            "Leaders should be consistent on repeated calls"
+        );
+        assert_eq!(
+            leader2, leader3,
+            "Leaders should be consistent on repeated calls"
+        );
     }
 
     #[test]
+    #[should_panic]
     fn test_compute_leader_zero_weights() {
         let party_weights = vec![0, 0, 0];
-        let result = compute_leader(party_weights);
+        let threshold = 1; // example threshold
 
-        match result {
-            Err(LeaderElectionError::ZeroWeightSum) => {} // This is the expected outcome
-            _ => panic!("Expected ZeroWeightSum error"),
-        }
+        // Create the config, which will attempt to compute the leader
+        BPConConfig::new(party_weights, threshold);
     }
 
     #[test]
