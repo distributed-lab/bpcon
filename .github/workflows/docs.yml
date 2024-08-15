@@ -27,7 +27,7 @@ jobs:
       - name: Build Rust Documentation
         run: |
           cargo doc --no-deps --document-private-items
-          echo "<meta http-equiv=\"refresh\" content=\"0; url=\">" > target/doc/index.html
+          echo "<meta http-equiv=\"refresh\" content=\"0; url=bpcon\">" > target/doc/index.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
