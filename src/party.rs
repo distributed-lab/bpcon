@@ -15,26 +15,35 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::time::{self, Duration};
 
 /// BPCon configuration. Includes ballot time bounds and other stuff.
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct BPConConfig {
     /// Parties weights: `party_weights[i]` corresponds to the i-th party weight
     pub party_weights: Vec<u64>,
 
     /// Threshold weight to define BFT quorum: should be > 2/3 of total weight
     pub threshold: u128,
-    // TODO: define other config fields.
-}
 
-impl BPConConfig {
-    /// Create new config instance.
-    pub fn new(party_weights: Vec<u64>, threshold: u128) -> Self {
-        Self {
-            party_weights,
-            threshold,
-        }
-    }
+    /// Timeout before 1a stage is launched.
+    pub launch1a_timeout: Duration,
+
+    /// Timeout before 1b stage is launched.
+    pub launch1b_timeout: Duration,
+
+    /// Timeout before 2a stage is launched.
+    pub launch2a_timeout: Duration,
+
+    /// Timeout before 2av stage is launched.
+    pub launch2av_timeout: Duration,
+
+    /// Timeout before 2b stage is launched.
+    pub launch2b_timeout: Duration,
+
+    /// Timeout before finalization stage is launched.
+    pub finalize_timeout: Duration,
 }
 
 /// Party status defines the statuses of the ballot for the particular participant
@@ -53,7 +62,7 @@ pub(crate) enum PartyStatus {
 }
 
 /// Party events is used for the ballot flow control.
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub(crate) enum PartyEvent {
     Launch1a,
     Launch1b,
@@ -64,6 +73,7 @@ pub(crate) enum PartyEvent {
 }
 
 /// A struct to keep track of senders and the cumulative weight of their messages.
+#[derive(PartialEq, Debug)]
 struct MessageRoundState {
     senders: HashSet<u64>,
     weight: u128,
@@ -112,12 +122,12 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     pub id: u64,
 
     /// Communication queues.
-    msg_in_receiver: Receiver<MessagePacket>,
-    msg_out_sender: Sender<MessagePacket>,
+    msg_in_receiver: UnboundedReceiver<MessagePacket>,
+    msg_out_sender: UnboundedSender<MessagePacket>,
 
     /// Query to receive and send events that run ballot protocol
-    event_receiver: Receiver<PartyEvent>,
-    event_sender: Sender<PartyEvent>,
+    event_receiver: UnboundedReceiver<PartyEvent>,
+    event_sender: UnboundedSender<PartyEvent>,
 
     /// BPCon config (e.g. ballot time bounds, parties weights, etc.).
     cfg: BPConConfig,
@@ -162,10 +172,14 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         id: u64,
         cfg: BPConConfig,
         value_selector: VS,
-    ) -> (Self, Receiver<MessagePacket>, Sender<MessagePacket>) {
-        let (event_sender, event_receiver) = channel();
-        let (msg_in_sender, msg_in_receiver) = channel();
-        let (msg_out_sender, msg_out_receiver) = channel();
+    ) -> (
+        Self,
+        UnboundedReceiver<MessagePacket>,
+        UnboundedSender<MessagePacket>,
+    ) {
+        let (event_sender, event_receiver) = unbounded_channel();
+        let (msg_in_sender, msg_in_receiver) = unbounded_channel();
+        let (msg_out_sender, msg_out_receiver) = unbounded_channel();
 
         (
             Self {
@@ -261,51 +275,88 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     pub async fn launch_ballot(&mut self) -> Result<Option<V>, BallotError> {
         self.prepare_next_ballot();
 
+        self.status = PartyStatus::Launched;
+
+        let launch1a_timer = time::sleep(self.cfg.launch1a_timeout);
+        let launch1b_timer = time::sleep(self.cfg.launch1b_timeout);
+        let launch2a_timer = time::sleep(self.cfg.launch2a_timeout);
+        let launch2av_timer = time::sleep(self.cfg.launch2av_timeout);
+        let launch2b_timer = time::sleep(self.cfg.launch2a_timeout);
+        let finalize_timer = time::sleep(self.cfg.finalize_timeout);
+
+        // Prevent the timers from firing immediately
+        tokio::pin!(
+            launch1a_timer,
+            launch1b_timer,
+            launch2a_timer,
+            launch2av_timer,
+            launch2b_timer,
+            finalize_timer
+        );
+
         while self.is_launched() {
-            if let Ok(msg_wire) = self.msg_in_receiver.try_recv() {
-                if let Err(err) = self.update_state(msg_wire.content_bytes, msg_wire.routing) {
-                    self.status = PartyStatus::Failed;
-                    return Err(err);
-                }
+            tokio::select! {
+                _ = &mut launch1a_timer => {
+                    self.event_sender.send(PartyEvent::Launch1a).map_err(|_| {
+                        self.status = PartyStatus::Failed;
+                        BallotError::Communication("Failed to send Launch1a event".into())
+                    })?;
+                },
+                _ = &mut launch1b_timer => {
+                    self.event_sender.send(PartyEvent::Launch1b).map_err(|_| {
+                        self.status = PartyStatus::Failed;
+                        BallotError::Communication("Failed to send Launch1b event".into())
+                    })?;
+                },
+                _ = &mut launch2a_timer => {
+                    self.event_sender.send(PartyEvent::Launch2a).map_err(|_| {
+                        self.status = PartyStatus::Failed;
+                        BallotError::Communication("Failed to send Launch2a event".into())
+                    })?;
+                },
+                _ = &mut launch2av_timer => {
+                    self.event_sender.send(PartyEvent::Launch2av).map_err(|_| {
+                        self.status = PartyStatus::Failed;
+                        BallotError::Communication("Failed to send Launch2av event".into())
+                    })?;
+                },
+                _ = &mut launch2b_timer => {
+                    self.event_sender.send(PartyEvent::Launch2b).map_err(|_| {
+                        self.status = PartyStatus::Failed;
+                        BallotError::Communication("Failed to send Launch2b event".into())
+                    })?;
+                },
+                _ = &mut finalize_timer => {
+                    self.event_sender.send(PartyEvent::Finalize).map_err(|_| {
+                        self.status = PartyStatus::Failed;
+                        BallotError::Communication("Failed to send Finalize event".into())
+                    })?;
+                },
+                msg_wire = self.msg_in_receiver.recv() => {
+                    if let Some(msg_wire) = msg_wire {
+                        if let Err(err) = self.update_state(msg_wire.content_bytes, msg_wire.routing) {
+                            self.status = PartyStatus::Failed;
+                            return Err(err);
+                        }
+                    } else {
+                        // Handle the case where the channel has been closed
+                        self.status = PartyStatus::Failed;
+                        return Err(BallotError::Communication("Message channel closed".into()));
+                    }
+                },
+                event = self.event_receiver.recv() => {
+                    if let Some(event) = event {
+                        if let Err(err) = self.follow_event(event) {
+                            self.status = PartyStatus::Failed;
+                            return Err(err);
+                        }
+                    } else {
+                        // Handle the case where the channel has been closed
+                        self.status = PartyStatus::Failed;
+                        return Err(BallotError::Communication("Event channel closed".into()));
+                    }
+                },
             }
-
-            if let Ok(event) = self.event_receiver.try_recv() {
-                if let Err(err) = self.follow_event(event) {
-                    self.status = PartyStatus::Failed;
-                    return Err(err);
-                }
-            }
-
-            // TODO: Emit events to run ballot protocol according to the ballot configuration
-            self.event_sender.send(PartyEvent::Launch1a).map_err(|_| {
-                self.status = PartyStatus::Failed;
-                BallotError::Communication("Failed to send Launch1a event".into())
-            })?;
-
-            self.event_sender.send(PartyEvent::Launch1b).map_err(|_| {
-                self.status = PartyStatus::Failed;
-                BallotError::Communication("Failed to send Launch1b event".into())
-            })?;
-
-            self.event_sender.send(PartyEvent::Launch2a).map_err(|_| {
-                self.status = PartyStatus::Failed;
-                BallotError::Communication("Failed to send Launch2a event".into())
-            })?;
-
-            self.event_sender.send(PartyEvent::Launch2av).map_err(|_| {
-                self.status = PartyStatus::Failed;
-                BallotError::Communication("Failed to send Launch2av event".into())
-            })?;
-
-            self.event_sender.send(PartyEvent::Launch2b).map_err(|_| {
-                self.status = PartyStatus::Failed;
-                BallotError::Communication("Failed to send Launch2b event".into())
-            })?;
-
-            self.event_sender.send(PartyEvent::Finalize).map_err(|_| {
-                self.status = PartyStatus::Failed;
-                BallotError::Communication("Failed to send Finalize event".into())
-            })?;
         }
 
         Ok(self.get_value_selected())
@@ -664,12 +715,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_compute_leader_determinism() {
-        let cfg = BPConConfig {
+    fn default_config() -> BPConConfig {
+        BPConConfig {
             party_weights: vec![1, 2, 3],
             threshold: 4,
-        };
+            launch1a_timeout: Duration::from_secs(0),
+            launch1b_timeout: Duration::from_secs(10),
+            launch2a_timeout: Duration::from_secs(20),
+            launch2av_timeout: Duration::from_secs(30),
+            launch2b_timeout: Duration::from_secs(40),
+            finalize_timeout: Duration::from_secs(50),
+        }
+    }
+
+    #[test]
+    fn test_compute_leader_determinism() {
+        let cfg = default_config();
         let party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
 
         // Compute the leader multiple times
@@ -690,10 +751,9 @@ mod tests {
 
     #[test]
     fn test_compute_leader_zero_weights() {
-        let cfg = BPConConfig {
-            party_weights: vec![0, 0, 0],
-            threshold: 4,
-        };
+        let mut cfg = default_config();
+        cfg.party_weights = vec![0, 0, 0];
+
         let party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
 
         match party.get_leader() {
@@ -706,10 +766,7 @@ mod tests {
 
     #[test]
     fn test_update_state_msg1a() {
-        let cfg = BPConConfig {
-            party_weights: vec![1, 2, 3],
-            threshold: 4,
-        };
+        let cfg = default_config();
         let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
         party.status = PartyStatus::Launched;
         party.ballot = 1;
@@ -738,10 +795,7 @@ mod tests {
 
     #[test]
     fn test_update_state_msg1b() {
-        let cfg = BPConConfig {
-            party_weights: vec![1, 2, 3], // Total weight is 6
-            threshold: 4,                 // Threshold is 4
-        };
+        let cfg = default_config();
         let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
         party.status = PartyStatus::Passed1a;
         party.ballot = 1;
@@ -796,10 +850,7 @@ mod tests {
 
     #[test]
     fn test_update_state_msg2a() {
-        let cfg = BPConConfig {
-            party_weights: vec![1, 2, 3],
-            threshold: 4,
-        };
+        let cfg = default_config();
         let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
         party.status = PartyStatus::Passed1b;
         party.ballot = 1;
@@ -832,10 +883,7 @@ mod tests {
 
     #[test]
     fn test_update_state_msg2av() {
-        let cfg = BPConConfig {
-            party_weights: vec![1, 2, 3],
-            threshold: 4,
-        };
+        let cfg = default_config();
         let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
         party.status = PartyStatus::Passed2a;
         party.ballot = 1;
@@ -889,10 +937,7 @@ mod tests {
 
     #[test]
     fn test_update_state_msg2b() {
-        let cfg = BPConConfig {
-            party_weights: vec![1, 2, 3],
-            threshold: 4,
-        };
+        let cfg = default_config();
         let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
         party.status = PartyStatus::Passed2av;
         party.ballot = 1;
@@ -955,10 +1000,7 @@ mod tests {
 
     #[test]
     fn test_follow_event_launch1a() {
-        let cfg = BPConConfig {
-            party_weights: vec![1, 2, 3],
-            threshold: 4,
-        };
+        let cfg = default_config();
         let (mut party, _msg_out_receiver, _msg_in_sender) =
             Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector);
 
@@ -975,10 +1017,7 @@ mod tests {
 
     #[test]
     fn test_ballot_reset_after_failure() {
-        let cfg = BPConConfig {
-            party_weights: vec![1, 2, 3],
-            threshold: 4,
-        };
+        let cfg = default_config();
         let (mut party, _, _) =
             Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector);
 
@@ -1000,10 +1039,7 @@ mod tests {
 
     #[test]
     fn test_follow_event_communication_failure() {
-        let cfg = BPConConfig {
-            party_weights: vec![1, 2, 3],
-            threshold: 4,
-        };
+        let cfg = default_config();
 
         // This party id is precomputed for this specific party_weights, threshold and ballot.
         // Because we need leader to send 1a.
@@ -1028,5 +1064,51 @@ mod tests {
             }
             _ => panic!("Expected BallotError::Communication, got {:?}", result),
         }
+    }
+
+    #[tokio::test]
+    #[ignore] // This test is unfinished, turning off temporarily.
+    async fn test_launch_ballot_timeouts() {
+        // Pause the Tokio time so we can manipulate it
+        time::pause();
+
+        // Set up the Party with necessary configuration
+        let cfg = default_config();
+
+        let mut party =
+            Party::<MockValue, MockValueSelector>::new(0, cfg.clone(), MockValueSelector).0;
+
+        // Create the event and message channels to substitute for testing.
+        let (event_sender, mut event_receiver) = unbounded_channel();
+
+        party.event_sender = event_sender;
+        // Note that we don't change party.event_receiver
+
+        // Spawn the launch_ballot function in a separate task
+        let ballot_task = tokio::spawn(async move {
+            party.launch_ballot().await.unwrap();
+        });
+
+        // Fast-forward time and check that the correct event is sent after each interval
+        time::advance(cfg.launch1a_timeout).await;
+        assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Launch1a);
+
+        time::advance(cfg.launch1b_timeout).await;
+        assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Launch1b);
+
+        time::advance(cfg.launch2a_timeout).await;
+        assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Launch2a);
+
+        time::advance(cfg.launch2av_timeout).await;
+        assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Launch2av);
+
+        time::advance(cfg.launch2b_timeout).await;
+        assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Launch2b);
+
+        time::advance(cfg.finalize_timeout).await;
+        assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Finalize);
+
+        // Ensure that the task completes successfully
+        ballot_task.await.unwrap();
     }
 }
