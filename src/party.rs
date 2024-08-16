@@ -24,62 +24,16 @@ pub struct BPConConfig {
 
     /// Threshold weight to define BFT quorum: should be > 2/3 of total weight
     pub threshold: u128,
-
-    /// Leader of the ballot, computed using seed obtained from config.
-    leader: u64,
     // TODO: define other config fields.
 }
 
 impl BPConConfig {
     /// Create new config instance.
     pub fn new(party_weights: Vec<u64>, threshold: u128) -> Self {
-        let mut cfg = Self {
+        Self {
             party_weights,
             threshold,
-            leader: 0,
-        };
-        cfg.leader = cfg.compute_leader().unwrap();
-
-        cfg
-    }
-
-    /// Compute leader in a weighed randomized manner.
-    /// Uses seed from the config, making it deterministic.
-    fn compute_leader(&self) -> Result<u64, BallotError> {
-        let seed = self.compute_seed();
-
-        let total_weight: u64 = self.party_weights.iter().sum();
-        if total_weight == 0 {
-            return Err(BallotError::LeaderElection("Zero weight sum".into()));
         }
-
-        // Use the seed from the config to create a deterministic random number generator.
-        let mut rng = StdRng::seed_from_u64(seed);
-
-        let random_value: u64 = rng.gen_range(0..total_weight);
-
-        let mut cumulative_weight = 0;
-        for (i, &weight) in self.party_weights.iter().enumerate() {
-            cumulative_weight += weight;
-            if random_value < cumulative_weight {
-                return Ok(i as u64);
-            }
-        }
-        Err(BallotError::LeaderElection("Election failed".into()))
-    }
-
-    /// Compute seed for randomized leader election.
-    fn compute_seed(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-
-        // Hash each field that should contribute to the seed
-        self.party_weights.hash(&mut hasher);
-        self.threshold.hash(&mut hasher);
-
-        // You can add more fields as needed
-
-        // Generate the seed from the hash
-        hasher.finish()
     }
 }
 
@@ -258,6 +212,46 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         None
     }
 
+    /// Compute leader in a weighed randomized manner.
+    /// Uses seed from the config, making it deterministic.
+    pub fn get_leader(&self) -> Result<u64, BallotError> {
+        let seed = self.compute_seed();
+
+        let total_weight: u64 = self.cfg.party_weights.iter().sum();
+        if total_weight == 0 {
+            return Err(BallotError::LeaderElection("Zero weight sum".into()));
+        }
+
+        // Use the seed from the config to create a deterministic random number generator.
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        let random_value: u64 = rng.gen_range(0..total_weight);
+
+        let mut cumulative_weight = 0;
+        for (i, &weight) in self.cfg.party_weights.iter().enumerate() {
+            cumulative_weight += weight;
+            if random_value < cumulative_weight {
+                return Ok(i as u64);
+            }
+        }
+        Err(BallotError::LeaderElection("Election failed".into()))
+    }
+
+    /// Compute seed for randomized leader election.
+    fn compute_seed(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+
+        // Hash each field that should contribute to the seed
+        self.cfg.party_weights.hash(&mut hasher);
+        self.cfg.threshold.hash(&mut hasher);
+        self.ballot.hash(&mut hasher);
+
+        // You can add more fields as needed
+
+        // Generate the seed from the hash
+        hasher.finish()
+    }
+
     fn get_value(&self) -> V {
         self.value_selector.select(&self.parties_voted_before)
     }
@@ -356,7 +350,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     ));
                 }
 
-                if routing.sender != self.cfg.leader {
+                if routing.sender != self.get_leader()? {
                     return Err(BallotError::InvalidState("Invalid leader in Msg1a".into()));
                 }
 
@@ -422,7 +416,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     ));
                 }
 
-                if routing.sender != self.cfg.leader {
+                if routing.sender != self.get_leader()? {
                     return Err(BallotError::InvalidState("Invalid leader in Msg2a".into()));
                 }
 
@@ -526,7 +520,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         "Cannot launch 1a, incorrect state".into(),
                     ));
                 }
-                if self.cfg.leader == self.id {
+                if self.get_leader()? == self.id {
                     self.msg_out_sender
                         .send(MessagePacket {
                             content_bytes: rkyv::to_bytes::<_, 256>(&Message1aContent {
@@ -576,7 +570,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         "Cannot launch 2a, incorrect state".into(),
                     ));
                 }
-                if self.cfg.leader == self.id {
+                if self.get_leader()? == self.id {
                     self.msg_out_sender
                         .send(MessagePacket {
                             content_bytes: rkyv::to_bytes::<_, 256>(&Message2aContent {
@@ -672,16 +666,16 @@ mod tests {
 
     #[test]
     fn test_compute_leader_determinism() {
-        let party_weights = vec![1, 2, 7]; // Weighted case
-        let threshold = 7; // example threshold
-
-        // Initialize the configuration once
-        let config = BPConConfig::new(party_weights.clone(), threshold);
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3],
+            threshold: 4,
+        };
+        let party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
 
         // Compute the leader multiple times
-        let leader1 = config.compute_leader().unwrap();
-        let leader2 = config.compute_leader().unwrap();
-        let leader3 = config.compute_leader().unwrap();
+        let leader1 = party.get_leader().unwrap();
+        let leader2 = party.get_leader().unwrap();
+        let leader3 = party.get_leader().unwrap();
 
         // All leaders should be the same due to deterministic seed
         assert_eq!(
@@ -695,13 +689,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_compute_leader_zero_weights() {
-        let party_weights = vec![0, 0, 0];
-        let threshold = 1; // example threshold
+        let cfg = BPConConfig {
+            party_weights: vec![0, 0, 0],
+            threshold: 4,
+        };
+        let party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
 
-        // Create the config, which will attempt to compute the leader
-        BPConConfig::new(party_weights, threshold);
+        match party.get_leader() {
+            Err(BallotError::LeaderElection(_)) => {
+                // The test passes if the error is of type LeaderElection
+            }
+            _ => panic!("Expected BallotError::LeaderElection"),
+        }
     }
 
     #[test]
@@ -709,15 +709,17 @@ mod tests {
         let cfg = BPConConfig {
             party_weights: vec![1, 2, 3],
             threshold: 4,
-            leader: 1,
         };
         let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
         party.status = PartyStatus::Launched;
         party.ballot = 1;
 
+        // Must send this message from leader of the ballot.
+        let leader = party.get_leader().unwrap();
+
         let msg = Message1aContent { ballot: 1 };
         let routing = MessageRouting {
-            sender: 1,
+            sender: leader,
             receivers: vec![2, 3],
             is_broadcast: false,
             msg_type: ProtocolMessage::Msg1a,
@@ -739,7 +741,6 @@ mod tests {
         let cfg = BPConConfig {
             party_weights: vec![1, 2, 3], // Total weight is 6
             threshold: 4,                 // Threshold is 4
-            leader: 1,
         };
         let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
         party.status = PartyStatus::Passed1a;
@@ -798,18 +799,20 @@ mod tests {
         let cfg = BPConConfig {
             party_weights: vec![1, 2, 3],
             threshold: 4,
-            leader: 1,
         };
         let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
         party.status = PartyStatus::Passed1b;
         party.ballot = 1;
+
+        // Must send this message from leader of the ballot.
+        let leader = party.get_leader().unwrap();
 
         let msg = Message2aContent {
             ballot: 1,
             value: bincode::serialize(&MockValue(42)).unwrap(),
         };
         let routing = MessageRouting {
-            sender: 1,
+            sender: leader,
             receivers: vec![0],
             is_broadcast: false,
             msg_type: ProtocolMessage::Msg2a,
@@ -832,7 +835,6 @@ mod tests {
         let cfg = BPConConfig {
             party_weights: vec![1, 2, 3],
             threshold: 4,
-            leader: 1,
         };
         let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
         party.status = PartyStatus::Passed2a;
@@ -890,7 +892,6 @@ mod tests {
         let cfg = BPConConfig {
             party_weights: vec![1, 2, 3],
             threshold: 4,
-            leader: 1,
         };
         let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
         party.status = PartyStatus::Passed2av;
@@ -957,7 +958,6 @@ mod tests {
         let cfg = BPConConfig {
             party_weights: vec![1, 2, 3],
             threshold: 4,
-            leader: 0,
         };
         let (mut party, _msg_out_receiver, _msg_in_sender) =
             Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector);
@@ -978,7 +978,6 @@ mod tests {
         let cfg = BPConConfig {
             party_weights: vec![1, 2, 3],
             threshold: 4,
-            leader: 0,
         };
         let (mut party, _, _) =
             Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector);
@@ -1004,10 +1003,14 @@ mod tests {
         let cfg = BPConConfig {
             party_weights: vec![1, 2, 3],
             threshold: 4,
-            leader: 0,
         };
+
+        // This party id is precomputed for this specific party_weights, threshold and ballot.
+        // Because we need leader to send 1a.
+        let party_id = 2;
+
         let (mut party, msg_out_receiver, _) =
-            Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector);
+            Party::<MockValue, MockValueSelector>::new(party_id, cfg, MockValueSelector);
 
         party.status = PartyStatus::Launched;
         party.ballot = 1;
