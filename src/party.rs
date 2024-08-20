@@ -6,9 +6,6 @@ use crate::message::{
     MessagePacket, MessageRouting, ProtocolMessage,
 };
 use crate::{Value, ValueSelector};
-use rand::prelude::StdRng;
-use rand::prelude::*;
-use rand::Rng;
 use rkyv::{AlignedVec, Deserialize, Infallible};
 use std::cmp::PartialEq;
 use std::collections::hash_map::DefaultHasher;
@@ -236,15 +233,10 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
             return Err(BallotError::LeaderElection("Zero weight sum".into()));
         }
 
-        // Use the seed from the config to create a deterministic random number generator.
-        let mut rng = StdRng::seed_from_u64(seed);
-
-        let random_value: u64 = rng.gen_range(0..total_weight);
-
         let mut cumulative_weight = 0;
         for (i, &weight) in self.cfg.party_weights.iter().enumerate() {
             cumulative_weight += weight;
-            if random_value < cumulative_weight {
+            if self.hash_to_range(seed, cumulative_weight) < weight {
                 return Ok(i as u64);
             }
         }
@@ -264,6 +256,13 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
 
         // Generate the seed from the hash
         hasher.finish()
+    }
+
+    /// Hash the seed to a value within a given range.
+    fn hash_to_range(&self, seed: u64, range: u64) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        seed.hash(&mut hasher);
+        hasher.finish() % range
     }
 
     fn get_value(&self) -> V {
@@ -1043,7 +1042,7 @@ mod tests {
 
         // This party id is precomputed for this specific party_weights, threshold and ballot.
         // Because we need leader to send 1a.
-        let party_id = 2;
+        let party_id = 0;
 
         let (mut party, msg_out_receiver, _) =
             Party::<MockValue, MockValueSelector>::new(party_id, cfg, MockValueSelector);
