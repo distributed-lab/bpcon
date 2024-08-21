@@ -391,6 +391,11 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     fn update_state(&mut self, m: AlignedVec, routing: MessageRouting) -> Result<(), BallotError> {
         match routing.msg_type {
             ProtocolMessage::Msg1a => {
+                if self.status != PartyStatus::Launched {
+                    return Err(BallotError::InvalidState(
+                        "Received Msg1a message, while party status is not <Launched>".into(),
+                    ));
+                }
                 let archived =
                     rkyv::check_archived_root::<Message1aContent>(&m[..]).map_err(|err| {
                         BallotError::MessageParsing(format!("Validation error: {:?}", err))
@@ -414,6 +419,11 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 self.status = PartyStatus::Passed1a;
             }
             ProtocolMessage::Msg1b => {
+                if self.status != PartyStatus::Passed1a {
+                    return Err(BallotError::InvalidState(
+                        "Received Msg1b message, while party status is not <Passed1a>".into(),
+                    ));
+                }
                 let archived =
                     rkyv::check_archived_root::<Message1bContent>(&m[..]).map_err(|err| {
                         BallotError::MessageParsing(format!("Validation error: {:?}", err))
@@ -457,6 +467,11 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
             }
             ProtocolMessage::Msg2a => {
+                if self.status != PartyStatus::Passed1b {
+                    return Err(BallotError::InvalidState(
+                        "Received Msg2a message, while party status is not <Passed1b>".into(),
+                    ));
+                }
                 let archived =
                     rkyv::check_archived_root::<Message2aContent>(&m[..]).map_err(|err| {
                         BallotError::MessageParsing(format!("Validation error: {:?}", err))
@@ -494,6 +509,11 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
             }
             ProtocolMessage::Msg2av => {
+                if self.status != PartyStatus::Passed2a {
+                    return Err(BallotError::InvalidState(
+                        "Received Msg2av message, while party status is not <Passed2a>".into(),
+                    ));
+                }
                 let archived =
                     rkyv::check_archived_root::<Message2avContent>(&m[..]).map_err(|err| {
                         BallotError::MessageParsing(format!("Validation error: {:?}", err))
@@ -535,6 +555,11 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 }
             }
             ProtocolMessage::Msg2b => {
+                if self.status != PartyStatus::Passed2av {
+                    return Err(BallotError::InvalidState(
+                        "Received Msg2b message, while party status is not <Passed2av>".into(),
+                    ));
+                }
                 let archived =
                     rkyv::check_archived_root::<Message2bContent>(&m[..]).map_err(|err| {
                         BallotError::MessageParsing(format!("Validation error: {:?}", err))
