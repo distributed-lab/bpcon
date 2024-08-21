@@ -41,6 +41,9 @@ pub struct BPConConfig {
 
     /// Timeout before finalization stage is launched.
     pub finalize_timeout: Duration,
+
+    /// Timeout for a graceful period to help parties with latency.
+    pub grace_period: Duration,
 }
 
 /// Party status defines the statuses of the ballot for the particular participant
@@ -341,6 +344,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     finalize_fired = true;
                 },
                 msg_wire = self.msg_in_receiver.recv() => {
+                    tokio::time::sleep(self.cfg.grace_period).await;
                     if let Some(msg_wire) = msg_wire {
                         if let Err(err) = self.update_state(msg_wire.content_bytes, msg_wire.routing) {
                             self.status = PartyStatus::Failed;
@@ -352,6 +356,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     }
                 },
                 event = self.event_receiver.recv() => {
+                    tokio::time::sleep(self.cfg.grace_period).await;
                     if let Some(event) = event {
                         if let Err(err) = self.follow_event(event) {
                             self.status = PartyStatus::Failed;
@@ -756,6 +761,7 @@ mod tests {
             launch2av_timeout: Duration::from_secs(30),
             launch2b_timeout: Duration::from_secs(40),
             finalize_timeout: Duration::from_secs(50),
+            grace_period: Duration::from_secs(1),
         }
     }
 
