@@ -24,6 +24,11 @@ pub struct BPConConfig {
     /// Threshold weight to define BFT quorum: should be > 2/3 of total weight
     pub threshold: u128,
 
+    /// Timeout before ballot is launched.
+    /// Differs from `launch1a_timeout` having another status and not listening
+    /// to external events and messages.
+    pub launch_timeout: Duration,
+
     /// Timeout before 1a stage is launched.
     pub launch1a_timeout: Duration,
 
@@ -274,6 +279,8 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
 
     pub async fn launch_ballot(&mut self) -> Result<Option<V>, BallotError> {
         self.prepare_next_ballot();
+        time::sleep(self.cfg.launch_timeout).await;
+
         self.status = PartyStatus::Launched;
 
         let launch1a_timer = time::sleep(self.cfg.launch1a_timeout);
@@ -755,6 +762,7 @@ mod tests {
         BPConConfig {
             party_weights: vec![1, 2, 3],
             threshold: 4,
+            launch_timeout: Duration::from_secs(0),
             launch1a_timeout: Duration::from_secs(0),
             launch1b_timeout: Duration::from_secs(10),
             launch2a_timeout: Duration::from_secs(20),
