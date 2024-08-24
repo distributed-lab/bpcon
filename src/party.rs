@@ -7,7 +7,7 @@ use crate::message::{
 };
 use crate::{Value, ValueSelector};
 use rkyv::{AlignedVec, Deserialize, Infallible};
-use std::cmp::PartialEq;
+use std::cmp::{Ordering, PartialEq};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::{HashMap, HashSet};
@@ -241,14 +241,26 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
             return Err(BallotError::LeaderElection("Zero weight sum".into()));
         }
 
-        let mut cumulative_weight = 0;
-        for (i, &weight) in self.cfg.party_weights.iter().enumerate() {
-            cumulative_weight += weight;
-            if self.hash_to_range(seed, cumulative_weight) < weight {
-                return Ok(i as u64);
-            }
+        // Generate a random number in the range [0, total_weight)
+        let random_value = self.hash_to_range(seed, total_weight);
+
+        // Use binary search to find the corresponding participant
+        let mut cumulative_weights = vec![0; self.cfg.party_weights.len()];
+        cumulative_weights[0] = self.cfg.party_weights[0];
+
+        for i in 1..self.cfg.party_weights.len() {
+            cumulative_weights[i] = cumulative_weights[i - 1] + self.cfg.party_weights[i];
         }
-        Err(BallotError::LeaderElection("Election failed".into()))
+
+        match cumulative_weights.binary_search_by(|&weight| {
+            if random_value < weight {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }) {
+            Ok(index) | Err(index) => Ok(index as u64),
+        }
     }
 
     /// Compute seed for randomized leader election.
