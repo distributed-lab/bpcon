@@ -111,6 +111,72 @@ impl MessageRoundState {
     }
 }
 
+/// Trait incorporating logic for leader election.
+pub trait LeaderElector<V: Value, VS: ValueSelector<V>>: Send {
+    /// Get leader for current ballot.
+    /// Returns id of the elected party or error.
+    fn get_leader(&self, party: &Party<V, VS>) -> Result<u64, BallotError>;
+}
+
+pub struct DefaultLeaderElector {}
+
+impl DefaultLeaderElector {
+    /// Compute seed for randomized leader election.
+    fn compute_seed<V: Value, VS: ValueSelector<V>>(party: &Party<V, VS>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+
+        // Hash each field that should contribute to the seed
+        party.cfg.party_weights.hash(&mut hasher);
+        party.cfg.threshold.hash(&mut hasher);
+        party.ballot.hash(&mut hasher);
+
+        // You can add more fields as needed
+
+        // Generate the seed from the hash
+        hasher.finish()
+    }
+
+    /// Hash the seed to a value within a given range.
+    fn hash_to_range(seed: u64, range: u64) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        seed.hash(&mut hasher);
+        hasher.finish() % range
+    }
+}
+
+impl<V: Value, VS: ValueSelector<V>> LeaderElector<V, VS> for DefaultLeaderElector {
+    /// Compute leader in a weighed randomized manner.
+    /// Uses seed from the config, making it deterministic.
+    fn get_leader(&self, party: &Party<V, VS>) -> Result<u64, BallotError> {
+        let seed = DefaultLeaderElector::compute_seed(party);
+
+        let total_weight: u64 = party.cfg.party_weights.iter().sum();
+        if total_weight == 0 {
+            return Err(BallotError::LeaderElection("Zero weight sum".into()));
+        }
+
+        // Generate a random number in the range [0, total_weight)
+        let random_value = DefaultLeaderElector::hash_to_range(seed, total_weight);
+
+        // Use binary search to find the corresponding participant
+        let mut cumulative_weights = vec![0; party.cfg.party_weights.len()];
+        cumulative_weights[0] = party.cfg.party_weights[0];
+
+        for i in 1..party.cfg.party_weights.len() {
+            cumulative_weights[i] = cumulative_weights[i - 1] + party.cfg.party_weights[i];
+        }
+
+        match cumulative_weights.binary_search_by(|&weight| {
+            if random_value < weight {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }) {
+            Ok(index) | Err(index) => Ok(index as u64),
+        }
+    }
+}
 /// Party of the BPCon protocol that executes ballot.
 ///
 /// The communication between party and external
@@ -140,11 +206,17 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     /// Main functional for value selection.
     value_selector: VS,
 
+    /// Main functional for leader election.
+    elector: Box<dyn LeaderElector<V, VS>>,
+
     /// Status of the ballot execution
     status: PartyStatus,
 
     /// Current ballot number
     ballot: u64,
+
+    /// Current ballot leader
+    leader: u64,
 
     /// Last ballot where party submitted 2b message
     last_ballot_voted: Option<u64>,
@@ -177,6 +249,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         id: u64,
         cfg: BPConConfig,
         value_selector: VS,
+        elector: Box<dyn LeaderElector<V, VS>>,
     ) -> (
         Self,
         UnboundedReceiver<MessagePacket>,
@@ -195,8 +268,10 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 event_sender,
                 cfg,
                 value_selector,
+                elector,
                 status: PartyStatus::None,
                 ballot: 0,
+                leader: 0,
                 last_ballot_voted: None,
                 last_value_voted: None,
                 parties_voted_before: HashMap::new(),
@@ -231,66 +306,12 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         None
     }
 
-    /// Compute leader in a weighed randomized manner.
-    /// Uses seed from the config, making it deterministic.
-    pub fn get_leader(&self) -> Result<u64, BallotError> {
-        let seed = self.compute_seed();
-
-        let total_weight: u64 = self.cfg.party_weights.iter().sum();
-        if total_weight == 0 {
-            return Err(BallotError::LeaderElection("Zero weight sum".into()));
-        }
-
-        // Generate a random number in the range [0, total_weight)
-        let random_value = self.hash_to_range(seed, total_weight);
-
-        // Use binary search to find the corresponding participant
-        let mut cumulative_weights = vec![0; self.cfg.party_weights.len()];
-        cumulative_weights[0] = self.cfg.party_weights[0];
-
-        for i in 1..self.cfg.party_weights.len() {
-            cumulative_weights[i] = cumulative_weights[i - 1] + self.cfg.party_weights[i];
-        }
-
-        match cumulative_weights.binary_search_by(|&weight| {
-            if random_value < weight {
-                Ordering::Greater
-            } else {
-                Ordering::Less
-            }
-        }) {
-            Ok(index) | Err(index) => Ok(index as u64),
-        }
-    }
-
-    /// Compute seed for randomized leader election.
-    fn compute_seed(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-
-        // Hash each field that should contribute to the seed
-        self.cfg.party_weights.hash(&mut hasher);
-        self.cfg.threshold.hash(&mut hasher);
-        self.ballot.hash(&mut hasher);
-
-        // You can add more fields as needed
-
-        // Generate the seed from the hash
-        hasher.finish()
-    }
-
-    /// Hash the seed to a value within a given range.
-    fn hash_to_range(&self, seed: u64, range: u64) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        seed.hash(&mut hasher);
-        hasher.finish() % range
-    }
-
     fn get_value(&self) -> V {
         self.value_selector.select(&self.parties_voted_before)
     }
 
     pub async fn launch_ballot(&mut self) -> Result<Option<V>, BallotError> {
-        self.prepare_next_ballot();
+        self.prepare_next_ballot()?;
         time::sleep(self.cfg.launch_timeout).await;
 
         self.status = PartyStatus::Launched;
@@ -393,9 +414,10 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     }
 
     /// Prepare state before running a ballot.
-    fn prepare_next_ballot(&mut self) {
+    fn prepare_next_ballot(&mut self) -> Result<(), BallotError> {
         self.status = PartyStatus::None;
         self.ballot += 1;
+        self.leader = self.elector.get_leader(self)?;
 
         // Clean state
         self.parties_voted_before = HashMap::new();
@@ -409,6 +431,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         while self.msg_in_receiver.try_recv().is_ok() {}
 
         self.status = PartyStatus::Launched;
+        Ok(())
     }
 
     /// Update party's state based on message type.
@@ -436,7 +459,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     ));
                 }
 
-                if routing.sender != self.get_leader()? {
+                if routing.sender != self.leader {
                     return Err(BallotError::InvalidState("Invalid leader in Msg1a".into()));
                 }
 
@@ -512,7 +535,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     ));
                 }
 
-                if routing.sender != self.get_leader()? {
+                if routing.sender != self.leader {
                     return Err(BallotError::InvalidState("Invalid leader in Msg2a".into()));
                 }
 
@@ -626,7 +649,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         "Cannot launch 1a, incorrect state".into(),
                     ));
                 }
-                if self.get_leader()? == self.id {
+                if self.leader == self.id {
                     self.msg_out_sender
                         .send(MessagePacket {
                             content_bytes: rkyv::to_bytes::<_, 256>(&Message1aContent {
@@ -676,7 +699,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         "Cannot launch 2a, incorrect state".into(),
                     ));
                 }
-                if self.get_leader()? == self.id {
+                if self.leader == self.id {
                     self.msg_out_sender
                         .send(MessagePacket {
                             content_bytes: rkyv::to_bytes::<_, 256>(&Message2aContent {
@@ -788,12 +811,18 @@ mod tests {
     #[test]
     fn test_compute_leader_determinism() {
         let cfg = default_config();
-        let party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        let party = Party::<MockValue, MockValueSelector>::new(
+            0,
+            cfg,
+            MockValueSelector,
+            Box::new(DefaultLeaderElector {}),
+        )
+        .0;
 
         // Compute the leader multiple times
-        let leader1 = party.get_leader().unwrap();
-        let leader2 = party.get_leader().unwrap();
-        let leader3 = party.get_leader().unwrap();
+        let leader1 = party.elector.get_leader(&party).unwrap();
+        let leader2 = party.elector.get_leader(&party).unwrap();
+        let leader3 = party.elector.get_leader(&party).unwrap();
 
         // All leaders should be the same due to deterministic seed
         assert_eq!(
@@ -811,9 +840,15 @@ mod tests {
         let mut cfg = default_config();
         cfg.party_weights = vec![0, 0, 0];
 
-        let party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        let party = Party::<MockValue, MockValueSelector>::new(
+            0,
+            cfg,
+            MockValueSelector,
+            Box::new(DefaultLeaderElector {}),
+        )
+        .0;
 
-        match party.get_leader() {
+        match party.elector.get_leader(&party) {
             Err(BallotError::LeaderElection(_)) => {
                 // The test passes if the error is of type LeaderElection
             }
@@ -824,12 +859,18 @@ mod tests {
     #[test]
     fn test_update_state_msg1a() {
         let cfg = default_config();
-        let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        let mut party = Party::<MockValue, MockValueSelector>::new(
+            0,
+            cfg,
+            MockValueSelector,
+            Box::new(DefaultLeaderElector {}),
+        )
+        .0;
         party.status = PartyStatus::Launched;
         party.ballot = 1;
 
         // Must send this message from leader of the ballot.
-        let leader = party.get_leader().unwrap();
+        let leader = party.elector.get_leader(&party).unwrap();
 
         let msg = Message1aContent { ballot: 1 };
         let routing = MessageRouting {
@@ -853,7 +894,13 @@ mod tests {
     #[test]
     fn test_update_state_msg1b() {
         let cfg = default_config();
-        let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        let mut party = Party::<MockValue, MockValueSelector>::new(
+            0,
+            cfg,
+            MockValueSelector,
+            Box::new(DefaultLeaderElector {}),
+        )
+        .0;
         party.status = PartyStatus::Passed1a;
         party.ballot = 1;
 
@@ -908,12 +955,18 @@ mod tests {
     #[test]
     fn test_update_state_msg2a() {
         let cfg = default_config();
-        let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        let mut party = Party::<MockValue, MockValueSelector>::new(
+            0,
+            cfg,
+            MockValueSelector,
+            Box::new(DefaultLeaderElector {}),
+        )
+        .0;
         party.status = PartyStatus::Passed1b;
         party.ballot = 1;
 
         // Must send this message from leader of the ballot.
-        let leader = party.get_leader().unwrap();
+        let leader = party.elector.get_leader(&party).unwrap();
 
         let msg = Message2aContent {
             ballot: 1,
@@ -941,7 +994,13 @@ mod tests {
     #[test]
     fn test_update_state_msg2av() {
         let cfg = default_config();
-        let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        let mut party = Party::<MockValue, MockValueSelector>::new(
+            0,
+            cfg,
+            MockValueSelector,
+            Box::new(DefaultLeaderElector {}),
+        )
+        .0;
         party.status = PartyStatus::Passed2a;
         party.ballot = 1;
         party.value_2a = Some(MockValue(42));
@@ -995,7 +1054,13 @@ mod tests {
     #[test]
     fn test_update_state_msg2b() {
         let cfg = default_config();
-        let mut party = Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector).0;
+        let mut party = Party::<MockValue, MockValueSelector>::new(
+            0,
+            cfg,
+            MockValueSelector,
+            Box::new(DefaultLeaderElector {}),
+        )
+        .0;
         party.status = PartyStatus::Passed2av;
         party.ballot = 1;
 
@@ -1059,7 +1124,12 @@ mod tests {
     fn test_follow_event_launch1a() {
         let cfg = default_config();
         let (mut party, _msg_out_receiver, _msg_in_sender) =
-            Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector);
+            Party::<MockValue, MockValueSelector>::new(
+                0,
+                cfg,
+                MockValueSelector,
+                Box::new(DefaultLeaderElector {}),
+            );
 
         party.status = PartyStatus::Launched;
         party.ballot = 1;
@@ -1075,13 +1145,17 @@ mod tests {
     #[test]
     fn test_ballot_reset_after_failure() {
         let cfg = default_config();
-        let (mut party, _, _) =
-            Party::<MockValue, MockValueSelector>::new(0, cfg, MockValueSelector);
+        let (mut party, _, _) = Party::<MockValue, MockValueSelector>::new(
+            0,
+            cfg,
+            MockValueSelector,
+            Box::new(DefaultLeaderElector {}),
+        );
 
         party.status = PartyStatus::Failed;
         party.ballot = 1;
 
-        party.prepare_next_ballot();
+        party.prepare_next_ballot().unwrap();
 
         // Check that state has been reset
         assert_eq!(party.status, PartyStatus::Launched);
@@ -1102,8 +1176,12 @@ mod tests {
         // Because we need leader to send 1a.
         let party_id = 0;
 
-        let (mut party, msg_out_receiver, _) =
-            Party::<MockValue, MockValueSelector>::new(party_id, cfg, MockValueSelector);
+        let (mut party, msg_out_receiver, _) = Party::<MockValue, MockValueSelector>::new(
+            party_id,
+            cfg,
+            MockValueSelector,
+            Box::new(DefaultLeaderElector {}),
+        );
 
         party.status = PartyStatus::Launched;
         party.ballot = 1;
@@ -1135,7 +1213,12 @@ mod tests {
         // Need to return all 3 values, so that they don't get dropped
         // and associated channels don't get closed.
         let (mut party, _msg_out_receiver, _msg_in_sender) =
-            Party::<MockValue, MockValueSelector>::new(0, cfg.clone(), MockValueSelector);
+            Party::<MockValue, MockValueSelector>::new(
+                0,
+                cfg.clone(),
+                MockValueSelector,
+                Box::new(DefaultLeaderElector {}),
+            );
 
         // Same here, we would like to not lose party's event_receiver, so that test doesn't fail.
         let _event_sender = party.event_sender;
