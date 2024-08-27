@@ -159,6 +159,8 @@ impl DefaultLeaderElector {
             if raw_res < range {
                 return raw_res;
             }
+            // Executing this loop does not require a large number of iterations.
+            // Check tests for more info
         }
     }
 }
