@@ -1,18 +1,24 @@
 //! Definition of the BPCon participant structure.
 
-use crate::error::BallotError;
+use crate::error::FollowEventError::FailedToSendMessage;
+use crate::error::LaunchBallotError::{
+    EventChannelClosed, FailedToSendEvent, LeaderElectionError, MessageChannelClosed,
+};
+use crate::error::{
+    BallotNumberMismatch, DeserializationError, FollowEventError, LaunchBallotError,
+    LeaderMismatch, PartyStatusMismatch, SerializationError, UpdateStateError, ValueMismatch,
+};
+use crate::leader::LeaderElector;
 use crate::message::{
     Message1aContent, Message1bContent, Message2aContent, Message2avContent, Message2bContent,
-    MessagePacket, MessageRouting, ProtocolMessage,
+    MessagePacket, MessageRoundState, ProtocolMessage,
 };
 use crate::{Value, ValueSelector};
-use rkyv::{AlignedVec, Deserialize, Infallible};
-use seeded_random::{Random, Seed};
-use std::cmp::{Ordering, PartialEq};
-use std::collections::hash_map::DefaultHasher;
+use log::warn;
+use std::cmp::PartialEq;
 use std::collections::hash_map::Entry::Vacant;
-use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
+use std::collections::HashMap;
+use std::error::Error;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::{self, Duration};
 
@@ -54,7 +60,7 @@ pub struct BPConConfig {
 
 /// Party status defines the statuses of the ballot for the particular participant
 /// depending on local calculations.
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub(crate) enum PartyStatus {
     None,
     Launched,
@@ -68,7 +74,7 @@ pub(crate) enum PartyStatus {
 }
 
 /// Party events is used for the ballot flow control.
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub(crate) enum PartyEvent {
     Launch1a,
     Launch1b,
@@ -78,126 +84,6 @@ pub(crate) enum PartyEvent {
     Finalize,
 }
 
-/// A struct to keep track of senders and the cumulative weight of their messages.
-#[derive(PartialEq, Debug)]
-struct MessageRoundState {
-    senders: HashSet<u64>,
-    weight: u128,
-}
-
-impl MessageRoundState {
-    /// Creates a new instance of `MessageRoundState`.
-    fn new() -> Self {
-        Self {
-            senders: HashSet::new(),
-            weight: 0,
-        }
-    }
-
-    /// Adds a sender and their corresponding weight.
-    fn add_sender(&mut self, sender: u64, weight: u128) {
-        self.senders.insert(sender);
-        self.weight += weight;
-    }
-
-    /// Checks if the sender has already sent a message.
-    fn contains_sender(&self, sender: &u64) -> bool {
-        self.senders.contains(sender)
-    }
-
-    /// Resets the state.
-    fn reset(&mut self) {
-        self.senders.clear();
-        self.weight = 0;
-    }
-}
-
-/// Trait incorporating logic for leader election.
-pub trait LeaderElector<V: Value, VS: ValueSelector<V>>: Send {
-    /// Get leader for current ballot.
-    /// Returns id of the elected party or error.
-    fn get_leader(&self, party: &Party<V, VS>) -> Result<u64, BallotError>;
-}
-
-pub struct DefaultLeaderElector {}
-
-impl DefaultLeaderElector {
-    /// Compute seed for randomized leader election.
-    fn compute_seed<V: Value, VS: ValueSelector<V>>(party: &Party<V, VS>) -> u64 {
-        let mut hasher = DefaultHasher::new();
-
-        // Hash each field that should contribute to the seed
-        party.cfg.party_weights.hash(&mut hasher);
-        party.cfg.threshold.hash(&mut hasher);
-        party.ballot.hash(&mut hasher);
-
-        // You can add more fields as needed
-
-        // Generate the seed from the hash
-        hasher.finish()
-    }
-
-    /// Hash the seed to a value within a given range.
-    fn hash_to_range(seed: u64, range: u64) -> u64 {
-        // Select the `k` suck that value 2^k >= `range` and 2^k is the smallest.
-        let mut k = 64;
-        while 1u64 << (k - 1) >= range {
-            k -= 1;
-        }
-
-        // The following algorithm selects a random u64 value using `ChaCha12Rng`
-        // and reduces the result to the k-bits such that 2^k >= `range` the closes power of to the `range`.
-        // After we check if the result lies in [0..`range`) or [`range`..2^k).
-        // In the first case result is an acceptable value generated uniformly.
-        // In the second case we repeat the process again with the incremented iterations counter.
-        // Ref: Practical Cryptography 1st Edition by Niels Ferguson, Bruce Schneier, paragraph 10.8
-        let rng = Random::from_seed(Seed::unsafe_new(seed));
-        loop {
-            let mut raw_res: u64 = rng.gen();
-            raw_res >>= 64 - k;
-
-            if raw_res < range {
-                return raw_res;
-            }
-            // Executing this loop does not require a large number of iterations.
-            // Check tests for more info
-        }
-    }
-}
-
-impl<V: Value, VS: ValueSelector<V>> LeaderElector<V, VS> for DefaultLeaderElector {
-    /// Compute leader in a weighed randomized manner.
-    /// Uses seed from the config, making it deterministic.
-    fn get_leader(&self, party: &Party<V, VS>) -> Result<u64, BallotError> {
-        let seed = DefaultLeaderElector::compute_seed(party);
-
-        let total_weight: u64 = party.cfg.party_weights.iter().sum();
-        if total_weight == 0 {
-            return Err(BallotError::LeaderElection("Zero weight sum".into()));
-        }
-
-        // Generate a random number in the range [0, total_weight)
-        let random_value = DefaultLeaderElector::hash_to_range(seed, total_weight);
-
-        // Use binary search to find the corresponding participant
-        let mut cumulative_weights = vec![0; party.cfg.party_weights.len()];
-        cumulative_weights[0] = party.cfg.party_weights[0];
-
-        for i in 1..party.cfg.party_weights.len() {
-            cumulative_weights[i] = cumulative_weights[i - 1] + party.cfg.party_weights[i];
-        }
-
-        match cumulative_weights.binary_search_by(|&weight| {
-            if random_value < weight {
-                Ordering::Greater
-            } else {
-                Ordering::Less
-            }
-        }) {
-            Ok(index) | Err(index) => Ok(index as u64),
-        }
-    }
-}
 /// Party of the BPCon protocol that executes ballot.
 ///
 /// The communication between party and external
@@ -222,19 +108,19 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     event_sender: UnboundedSender<PartyEvent>,
 
     /// BPCon config (e.g. ballot time bounds, parties weights, etc.).
-    cfg: BPConConfig,
+    pub(crate) cfg: BPConConfig,
 
     /// Main functional for value selection.
     value_selector: VS,
 
     /// Main functional for leader election.
-    elector: Box<dyn LeaderElector<V, VS>>,
+    elector: Box<dyn LeaderElector<V, VS, LeaderElectorError = Box<dyn Error>>>,
 
     /// Status of the ballot execution
     status: PartyStatus,
 
     /// Current ballot number
-    ballot: u64,
+    pub(crate) ballot: u64,
 
     /// Current ballot leader
     leader: u64,
@@ -270,7 +156,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         id: u64,
         cfg: BPConConfig,
         value_selector: VS,
-        elector: Box<dyn LeaderElector<V, VS>>,
+        elector: Box<dyn LeaderElector<V, VS, LeaderElectorError = Box<dyn Error>>>,
     ) -> (
         Self,
         UnboundedReceiver<MessagePacket>,
@@ -331,11 +217,14 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         self.value_selector.select(&self.parties_voted_before)
     }
 
-    pub async fn launch_ballot(&mut self) -> Result<Option<V>, BallotError> {
-        self.prepare_next_ballot()?;
-        time::sleep(self.cfg.launch_timeout).await;
+    pub async fn launch_ballot(&mut self) -> Result<Option<V>, LaunchBallotError> {
+        self.prepare_next_ballot();
+        self.leader = self
+            .elector
+            .get_leader(self)
+            .map_err(|err| LeaderElectionError(err.to_string()))?;
 
-        self.status = PartyStatus::Launched;
+        time::sleep(self.cfg.launch_timeout).await;
 
         let launch1a_timer = time::sleep(self.cfg.launch1a_timeout);
         let launch1b_timer = time::sleep(self.cfg.launch1b_timeout);
@@ -363,69 +252,69 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         while self.is_launched() {
             tokio::select! {
                 _ = &mut launch1a_timer, if !launch1a_fired => {
-                    self.event_sender.send(PartyEvent::Launch1a).map_err(|_| {
+                    self.event_sender.send(PartyEvent::Launch1a).map_err(|err| {
                         self.status = PartyStatus::Failed;
-                        BallotError::Communication("Failed to send Launch1a event".into())
+                        FailedToSendEvent("Failed to send Launch1a event".into())
                     })?;
                     launch1a_fired = true;
                 },
                 _ = &mut launch1b_timer, if !launch1b_fired => {
                     self.event_sender.send(PartyEvent::Launch1b).map_err(|_| {
                         self.status = PartyStatus::Failed;
-                        BallotError::Communication("Failed to send Launch1b event".into())
+                         FailedToSendEvent("Failed to send Launch1a event".into())
                     })?;
                     launch1b_fired = true;
                 },
                 _ = &mut launch2a_timer, if !launch2a_fired => {
                     self.event_sender.send(PartyEvent::Launch2a).map_err(|_| {
                         self.status = PartyStatus::Failed;
-                        BallotError::Communication("Failed to send Launch2a event".into())
+                         FailedToSendEvent("Failed to send Launch1a event".into())
                     })?;
                     launch2a_fired = true;
                 },
                 _ = &mut launch2av_timer, if !launch2av_fired => {
                     self.event_sender.send(PartyEvent::Launch2av).map_err(|_| {
                         self.status = PartyStatus::Failed;
-                        BallotError::Communication("Failed to send Launch2av event".into())
+                         FailedToSendEvent("Failed to send Launch1a event".into())
                     })?;
                     launch2av_fired = true;
                 },
                 _ = &mut launch2b_timer, if !launch2b_fired => {
                     self.event_sender.send(PartyEvent::Launch2b).map_err(|_| {
                         self.status = PartyStatus::Failed;
-                        BallotError::Communication("Failed to send Launch2b event".into())
+                         FailedToSendEvent("Failed to send Launch1a event".into())
                     })?;
                     launch2b_fired = true;
                 },
                 _ = &mut finalize_timer, if !finalize_fired => {
                     self.event_sender.send(PartyEvent::Finalize).map_err(|_| {
                         self.status = PartyStatus::Failed;
-                        BallotError::Communication("Failed to send Finalize event".into())
+                         FailedToSendEvent("Failed to send Launch1a event".into())
                     })?;
                     finalize_fired = true;
                 },
-                msg_wire = self.msg_in_receiver.recv() => {
-                    tokio::time::sleep(self.cfg.grace_period).await;
-                    if let Some(msg_wire) = msg_wire {
-                        if let Err(err) = self.update_state(msg_wire.content_bytes, msg_wire.routing) {
-                            self.status = PartyStatus::Failed;
-                            return Err(err);
+                msg = self.msg_in_receiver.recv() => {
+                    time::sleep(self.cfg.grace_period).await;
+                    if let Some(msg) = msg {
+                        if let Err(err) = self.update_state(&msg) {
+                            // shall not fail the party, since invalid message may be sent by anyone
+                            warn!("Unable to update state, got error: {err}")
                         }
                     }else if self.msg_in_receiver.is_closed(){
                          self.status = PartyStatus::Failed;
-                         return Err(BallotError::Communication("msg-in channel closed".into()));
+                         return Err(MessageChannelClosed.into())
                     }
                 },
                 event = self.event_receiver.recv() => {
-                    tokio::time::sleep(self.cfg.grace_period).await;
+                    time::sleep(self.cfg.grace_period).await;
                     if let Some(event) = event {
                         if let Err(err) = self.follow_event(event) {
                             self.status = PartyStatus::Failed;
-                            return Err(err);
+                            return Err(err.into());
                         }
                     }else if self.event_receiver.is_closed(){
                         self.status = PartyStatus::Failed;
-                        return Err(BallotError::Communication("event receiver channel closed".into()));
+                         return Err(EventChannelClosed.into())
                     }
                 },
             }
@@ -435,10 +324,9 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     }
 
     /// Prepare state before running a ballot.
-    fn prepare_next_ballot(&mut self) -> Result<(), BallotError> {
+    fn prepare_next_ballot(&mut self) {
         self.status = PartyStatus::None;
         self.ballot += 1;
-        self.leader = self.elector.get_leader(self)?;
 
         // Clean state
         self.parties_voted_before = HashMap::new();
@@ -452,77 +340,79 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         while self.msg_in_receiver.try_recv().is_ok() {}
 
         self.status = PartyStatus::Launched;
-        Ok(())
     }
 
     /// Update party's state based on message type.
-    fn update_state(&mut self, m: AlignedVec, routing: MessageRouting) -> Result<(), BallotError> {
+    fn update_state(&mut self, msg: &MessagePacket) -> Result<(), UpdateStateError<V>> {
+        let routing = msg.routing;
+
         match routing.msg_type {
             ProtocolMessage::Msg1a => {
                 if self.status != PartyStatus::Launched {
-                    return Err(BallotError::InvalidState(
-                        "Received Msg1a message, while party status is not <Launched>".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Launched,
+                    }
+                    .into());
                 }
-                let archived =
-                    rkyv::check_archived_root::<Message1aContent>(&m[..]).map_err(|err| {
-                        BallotError::MessageParsing(format!("Validation error: {:?}", err))
-                    })?;
 
-                let msg: Message1aContent =
-                    archived.deserialize(&mut Infallible).map_err(|err| {
-                        BallotError::MessageParsing(format!("Deserialization error: {:?}", err))
-                    })?;
+                let msg = Message1aContent::unpack(&msg)?;
 
                 if msg.ballot != self.ballot {
-                    return Err(BallotError::InvalidState(
-                        "Ballot number mismatch in Msg1a".into(),
-                    ));
+                    return Err(BallotNumberMismatch {
+                        party_ballot_number: self.ballot,
+                        message_ballot_number: msg.ballot,
+                    }
+                    .into());
                 }
 
                 if routing.sender != self.leader {
-                    return Err(BallotError::InvalidState("Invalid leader in Msg1a".into()));
+                    return Err(LeaderMismatch {
+                        party_leader: self.leader,
+                        message_sender: routing.sender,
+                    }
+                    .into());
                 }
 
                 self.status = PartyStatus::Passed1a;
             }
             ProtocolMessage::Msg1b => {
                 if self.status != PartyStatus::Passed1a {
-                    return Err(BallotError::InvalidState(
-                        "Received Msg1b message, while party status is not <Passed1a>".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Passed1a,
+                    }
+                    .into());
                 }
-                let archived =
-                    rkyv::check_archived_root::<Message1bContent>(&m[..]).map_err(|err| {
-                        BallotError::MessageParsing(format!("Validation error: {:?}", err))
-                    })?;
 
-                let msg: Message1bContent =
-                    archived.deserialize(&mut Infallible).map_err(|err| {
-                        BallotError::MessageParsing(format!("Deserialization error: {:?}", err))
-                    })?;
+                let msg = Message1bContent::unpack(&msg)?;
 
                 if msg.ballot != self.ballot {
-                    return Err(BallotError::InvalidState(
-                        "Ballot number mismatch in Msg1b".into(),
-                    ));
+                    return Err(BallotNumberMismatch {
+                        party_ballot_number: self.ballot,
+                        message_ballot_number: msg.ballot,
+                    }
+                    .into());
                 }
 
                 if let Some(last_ballot_voted) = msg.last_ballot_voted {
                     if last_ballot_voted >= self.ballot {
-                        return Err(BallotError::InvalidState(
-                            "Received outdated 1b message".into(),
-                        ));
+                        return Err(BallotNumberMismatch {
+                            party_ballot_number: self.ballot,
+                            message_ballot_number: msg.ballot,
+                        }
+                        .into());
                     }
                 }
 
                 if let Vacant(e) = self.parties_voted_before.entry(routing.sender) {
-                    let value: Option<V> = match msg.last_value_voted {
-                        Some(ref data) => Some(bincode::deserialize(data).map_err(|err| {
-                            BallotError::ValueParsing(format!("Deserialization error: {:?}", err))
-                        })?),
-                        None => None,
-                    };
+                    let value: Option<V> =
+                        match msg.last_value_voted {
+                            Some(ref data) => Some(bincode::deserialize(data).map_err(|err| {
+                                DeserializationError::Value(err.to_string()).into()
+                            })?),
+                            None => None,
+                        };
 
                     e.insert(value);
 
@@ -536,33 +426,33 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
             }
             ProtocolMessage::Msg2a => {
                 if self.status != PartyStatus::Passed1b {
-                    return Err(BallotError::InvalidState(
-                        "Received Msg2a message, while party status is not <Passed1b>".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Passed1b,
+                    }
+                    .into());
                 }
-                let archived =
-                    rkyv::check_archived_root::<Message2aContent>(&m[..]).map_err(|err| {
-                        BallotError::MessageParsing(format!("Validation error: {:?}", err))
-                    })?;
 
-                let msg: Message2aContent =
-                    archived.deserialize(&mut Infallible).map_err(|err| {
-                        BallotError::MessageParsing(format!("Deserialization error: {:?}", err))
-                    })?;
+                let msg = Message2aContent::unpack(&msg)?;
 
                 if msg.ballot != self.ballot {
-                    return Err(BallotError::InvalidState(
-                        "Ballot number mismatch in Msg2a".into(),
-                    ));
+                    return Err(BallotNumberMismatch {
+                        party_ballot_number: self.ballot,
+                        message_ballot_number: msg.ballot,
+                    }
+                    .into());
                 }
 
                 if routing.sender != self.leader {
-                    return Err(BallotError::InvalidState("Invalid leader in Msg2a".into()));
+                    return Err(LeaderMismatch {
+                        party_leader: self.leader,
+                        message_sender: routing.sender,
+                    }
+                    .into());
                 }
 
-                let value_received = bincode::deserialize(&msg.value[..]).map_err(|err| {
-                    BallotError::ValueParsing(format!("Failed to parse value in Msg2a: {:?}", err))
-                })?;
+                let value_received = bincode::deserialize(&msg.value[..])
+                    .map_err(|err| DeserializationError::Value(err.to_string()).into())?;
 
                 if self
                     .value_selector
@@ -571,44 +461,36 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     self.status = PartyStatus::Passed2a;
                     self.value_2a = Some(value_received);
                 } else {
-                    return Err(BallotError::InvalidState(
-                        "Failed to verify value in Msg2a".into(),
-                    ));
+                    return Err(UpdateStateError::ValueVerificationFailed.into());
                 }
             }
             ProtocolMessage::Msg2av => {
                 if self.status != PartyStatus::Passed2a {
-                    return Err(BallotError::InvalidState(
-                        "Received Msg2av message, while party status is not <Passed2a>".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Passed2a,
+                    }
+                    .into());
                 }
-                let archived =
-                    rkyv::check_archived_root::<Message2avContent>(&m[..]).map_err(|err| {
-                        BallotError::MessageParsing(format!("Validation error: {:?}", err))
-                    })?;
 
-                let msg: Message2avContent =
-                    archived.deserialize(&mut Infallible).map_err(|err| {
-                        BallotError::MessageParsing(format!("Deserialization error: {:?}", err))
-                    })?;
+                let msg = Message2avContent::unpack(&msg)?;
 
                 if msg.ballot != self.ballot {
-                    return Err(BallotError::InvalidState(
-                        "Ballot number mismatch in Msg2av".into(),
-                    ));
+                    return Err(BallotNumberMismatch {
+                        party_ballot_number: self.ballot,
+                        message_ballot_number: msg.ballot,
+                    }
+                    .into());
                 }
-                let value_received: V =
-                    bincode::deserialize(&msg.received_value[..]).map_err(|err| {
-                        BallotError::ValueParsing(format!(
-                            "Failed to parse value in Msg2av: {:?}",
-                            err
-                        ))
-                    })?;
+                let value_received: V = bincode::deserialize(&msg.received_value[..])
+                    .map_err(|err| DeserializationError::Value(err.to_string()).into())?;
 
                 if value_received != self.value_2a.clone().unwrap() {
-                    return Err(BallotError::InvalidState(
-                        "Received different value in Msg2av".into(),
-                    ));
+                    return Err(ValueMismatch {
+                        party_value: self.value_2a.clone().unwrap(),
+                        message_value: value_received.clone(),
+                    }
+                    .into());
                 }
 
                 if !self.messages_2av_state.contains_sender(&routing.sender) {
@@ -617,31 +499,28 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         self.cfg.party_weights[routing.sender as usize] as u128,
                     );
 
-                    if self.messages_2av_state.weight > self.cfg.threshold {
+                    if self.messages_2av_state.get_weight() > self.cfg.threshold {
                         self.status = PartyStatus::Passed2av;
                     }
                 }
             }
             ProtocolMessage::Msg2b => {
                 if self.status != PartyStatus::Passed2av {
-                    return Err(BallotError::InvalidState(
-                        "Received Msg2b message, while party status is not <Passed2av>".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Passed2av,
+                    }
+                    .into());
                 }
-                let archived =
-                    rkyv::check_archived_root::<Message2bContent>(&m[..]).map_err(|err| {
-                        BallotError::MessageParsing(format!("Validation error: {:?}", err))
-                    })?;
 
-                let msg: Message2bContent =
-                    archived.deserialize(&mut Infallible).map_err(|err| {
-                        BallotError::MessageParsing(format!("Deserialization error: {:?}", err))
-                    })?;
+                let msg = Message2bContent::unpack(&msg)?;
 
                 if msg.ballot != self.ballot {
-                    return Err(BallotError::InvalidState(
-                        "Ballot number mismatch in Msg2b".into(),
-                    ));
+                    return Err(BallotNumberMismatch {
+                        party_ballot_number: self.ballot,
+                        message_ballot_number: msg.ballot,
+                    }
+                    .into());
                 }
 
                 if self.messages_2av_state.contains_sender(&routing.sender)
@@ -652,7 +531,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         self.cfg.party_weights[routing.sender as usize] as u128,
                     );
 
-                    if self.messages_2b_state.weight > self.cfg.threshold {
+                    if self.messages_2b_state.get_weight() > self.cfg.threshold {
                         self.status = PartyStatus::Passed2b;
                     }
                 }
@@ -662,126 +541,131 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     }
 
     /// Executes ballot actions according to the received event.
-    fn follow_event(&mut self, event: PartyEvent) -> Result<(), BallotError> {
+    fn follow_event(&mut self, event: PartyEvent) -> Result<(), FollowEventError> {
         match event {
             PartyEvent::Launch1a => {
                 if self.status != PartyStatus::Launched {
-                    return Err(BallotError::InvalidState(
-                        "Cannot launch 1a, incorrect state".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Launched,
+                    }
+                    .into());
                 }
+
+                let content = &Message1aContent {
+                    ballot: self.ballot,
+                };
+                let msg = content.pack(self.id)?;
+
                 if self.leader == self.id {
                     self.msg_out_sender
-                        .send(MessagePacket {
-                            content_bytes: rkyv::to_bytes::<_, 256>(&Message1aContent {
-                                ballot: self.ballot,
-                            })
-                            .map_err(|_| {
-                                BallotError::MessageParsing("Failed to serialize Msg1a".into())
-                            })?,
-                            routing: Message1aContent::get_routing(self.id),
-                        })
-                        .map_err(|_| BallotError::Communication("Failed to send Msg1a".into()))?;
+                        .send(msg)
+                        .map_err(|err| FailedToSendMessage(err.to_string()).into())?;
+                    self.status = PartyStatus::Passed1a;
                 }
             }
             PartyEvent::Launch1b => {
                 if self.status != PartyStatus::Passed1a {
-                    return Err(BallotError::InvalidState(
-                        "Cannot launch 1b, incorrect state".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Passed1a,
+                    }
+                    .into());
                 }
-                self.msg_out_sender
-                    .send(MessagePacket {
-                        content_bytes: rkyv::to_bytes::<_, 256>(&Message1bContent {
-                            ballot: self.ballot,
-                            last_ballot_voted: self.last_ballot_voted,
-                            last_value_voted: self
-                                .last_value_voted
-                                .clone()
-                                .map(|inner_data| {
-                                    bincode::serialize(&inner_data).map_err(|_| {
-                                        BallotError::ValueParsing(
-                                            "Failed to serialize value".into(),
-                                        )
-                                    })
-                                })
-                                .transpose()?,
-                        })
-                        .map_err(|_| {
-                            BallotError::MessageParsing("Failed to serialize Msg1b".into())
-                        })?,
-                        routing: Message1bContent::get_routing(self.id),
+
+                let last_value_voted = self
+                    .last_value_voted
+                    .clone()
+                    .map(|inner_data| {
+                        bincode::serialize(&inner_data)
+                            .map_err(|err| SerializationError::Value(err.to_string()).into())
                     })
-                    .map_err(|_| BallotError::Communication("Failed to send Msg1b".into()))?;
+                    .transpose()?;
+
+                let content = &Message1bContent {
+                    ballot: self.ballot,
+                    last_ballot_voted: self.last_ballot_voted,
+                    last_value_voted,
+                };
+                let msg = content.pack(self.id)?;
+
+                self.msg_out_sender
+                    .send(msg)
+                    .map_err(|err| FailedToSendMessage(err.to_string()).into())?;
             }
             PartyEvent::Launch2a => {
                 if self.status != PartyStatus::Passed1b {
-                    return Err(BallotError::InvalidState(
-                        "Cannot launch 2a, incorrect state".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Passed1b,
+                    }
+                    .into());
                 }
+
+                let value = bincode::serialize(&self.get_value())
+                    .map_err(|err| SerializationError::Value(err.to_string()).into())?;
+
+                let content = &Message2aContent {
+                    ballot: self.ballot,
+                    value,
+                };
+                let msg = content.pack(self.id)?;
+
                 if self.leader == self.id {
                     self.msg_out_sender
-                        .send(MessagePacket {
-                            content_bytes: rkyv::to_bytes::<_, 256>(&Message2aContent {
-                                ballot: self.ballot,
-                                value: bincode::serialize(&self.get_value()).map_err(|_| {
-                                    BallotError::ValueParsing("Failed to serialize value".into())
-                                })?,
-                            })
-                            .map_err(|_| {
-                                BallotError::MessageParsing("Failed to serialize Msg2a".into())
-                            })?,
-                            routing: Message2aContent::get_routing(self.id),
-                        })
-                        .map_err(|_| BallotError::Communication("Failed to send Msg2a".into()))?;
+                        .send(msg)
+                        .map_err(|err| FailedToSendMessage(err.to_string()).into())?;
                 }
             }
             PartyEvent::Launch2av => {
                 if self.status != PartyStatus::Passed2a {
-                    return Err(BallotError::InvalidState(
-                        "Cannot launch 2av, incorrect state".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Passed2a,
+                    }
+                    .into());
                 }
+
+                let received_value = bincode::serialize(&self.value_2a.clone())
+                    .map_err(|err| SerializationError::Value(err.to_string()).into())?;
+
+                let content = &Message2avContent {
+                    ballot: self.ballot,
+                    received_value,
+                };
+                let msg = content.pack(self.id)?;
+
                 self.msg_out_sender
-                    .send(MessagePacket {
-                        content_bytes: rkyv::to_bytes::<_, 256>(&Message2avContent {
-                            ballot: self.ballot,
-                            received_value: bincode::serialize(&self.value_2a.clone()).map_err(
-                                |_| BallotError::ValueParsing("Failed to serialize value".into()),
-                            )?,
-                        })
-                        .map_err(|_| {
-                            BallotError::MessageParsing("Failed to serialize Msg2av".into())
-                        })?,
-                        routing: Message2avContent::get_routing(self.id),
-                    })
-                    .map_err(|_| BallotError::Communication("Failed to send Msg2av".into()))?;
+                    .send(msg)
+                    .map_err(|err| FailedToSendMessage(err.to_string()).into())?;
             }
             PartyEvent::Launch2b => {
                 if self.status != PartyStatus::Passed2av {
-                    return Err(BallotError::InvalidState(
-                        "Cannot launch 2b, incorrect state".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Passed2av,
+                    }
+                    .into());
                 }
+
+                let content = &Message2bContent {
+                    ballot: self.ballot,
+                };
+                let msg = content.pack(self.id)?;
+
                 self.msg_out_sender
-                    .send(MessagePacket {
-                        content_bytes: rkyv::to_bytes::<_, 256>(&Message2bContent {
-                            ballot: self.ballot,
-                        })
-                        .map_err(|_| {
-                            BallotError::MessageParsing("Failed to serialize Msg2b".into())
-                        })?,
-                        routing: Message2bContent::get_routing(self.id),
-                    })
-                    .map_err(|_| BallotError::Communication("Failed to send Msg2b".into()))?;
+                    .send(msg)
+                    .map_err(|err| FailedToSendMessage(err.to_string()).into())?;
             }
             PartyEvent::Finalize => {
                 if self.status != PartyStatus::Passed2b {
-                    return Err(BallotError::InvalidState(
-                        "Cannot finalize, incorrect state".into(),
-                    ));
+                    return Err(PartyStatusMismatch {
+                        party_status: self.status,
+                        needed_status: PartyStatus::Passed2av,
+                    }
+                    .into());
                 }
+
                 self.status = PartyStatus::Finished;
             }
         }
@@ -796,15 +680,23 @@ mod tests {
     use rand::Rng;
     use seeded_random::{Random, Seed};
     use std::collections::HashMap;
+    use std::fmt::{Display, Formatter};
     use std::thread;
 
     // Mock implementation of Value
-    #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Debug)]
     struct MockValue(u64); // Simple mock type wrapping an integer
+
+    impl Display for MockValue {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "MockValue: {}", self)
+        }
+    }
 
     impl Value for MockValue {}
 
     // Mock implementation of ValueSelector
+    #[derive(Clone)]
     struct MockValueSelector;
 
     impl ValueSelector<MockValue> for MockValueSelector {
@@ -1163,7 +1055,9 @@ mod tests {
             .expect("Failed to follow Launch1a event");
 
         // If the party is the leader and in the Launched state, the event should trigger a message.
-        assert_eq!(party.status, PartyStatus::Launched); // Status remains Launched, as no state change expected here
+        // And it's status shall update to Passed1a after sending 1a message,
+        // contrary to other participants, whose `Passed1a` updates only after receiving 1a message.
+        assert_eq!(party.status, PartyStatus::Passed1a);
     }
 
     #[test]
@@ -1342,5 +1236,171 @@ mod tests {
 
         println!("{}", rng1.gen::<u64>());
         println!("{}", rng2.gen::<u64>());
+    }
+
+    #[tokio::test]
+    async fn test_end_to_end_ballot() {
+        // Configuration for the parties
+        let cfg = BPConConfig {
+            party_weights: vec![1, 2, 3, 4], // Total weight is 10
+            threshold: 7, // 2/3 of total weight is ~6.67, so we set 7 as threshold
+            launch_timeout: Duration::from_secs(1),
+            launch1a_timeout: Duration::from_secs(5),
+            launch1b_timeout: Duration::from_secs(5),
+            launch2a_timeout: Duration::from_secs(5),
+            launch2av_timeout: Duration::from_secs(5),
+            launch2b_timeout: Duration::from_secs(5),
+            finalize_timeout: Duration::from_secs(5),
+            grace_period: Duration::from_secs(2),
+        };
+
+        // ValueSelector and LeaderElector instances
+        let value_selector = MockValueSelector;
+        let leader_elector = Box::new(DefaultLeaderElector {});
+
+        // Create 4 parties
+        let (mut party0, msg_out_receiver0, msg_in_sender0) =
+            Party::<MockValue, MockValueSelector>::new(
+                0,
+                cfg.clone(),
+                value_selector.clone(),
+                leader_elector.clone(),
+            );
+        let (mut party1, msg_out_receiver1, msg_in_sender1) =
+            Party::<MockValue, MockValueSelector>::new(
+                1,
+                cfg.clone(),
+                value_selector.clone(),
+                leader_elector.clone(),
+            );
+        let (mut party2, msg_out_receiver2, msg_in_sender2) =
+            Party::<MockValue, MockValueSelector>::new(
+                2,
+                cfg.clone(),
+                value_selector.clone(),
+                leader_elector.clone(),
+            );
+        let (mut party3, msg_out_receiver3, msg_in_sender3) =
+            Party::<MockValue, MockValueSelector>::new(
+                3,
+                cfg.clone(),
+                value_selector.clone(),
+                leader_elector.clone(),
+            );
+
+        // Channels for receiving the selected values
+        let (value_sender0, value_receiver0) = tokio::sync::oneshot::channel();
+        let (value_sender1, value_receiver1) = tokio::sync::oneshot::channel();
+        let (value_sender2, value_receiver2) = tokio::sync::oneshot::channel();
+        let (value_sender3, value_receiver3) = tokio::sync::oneshot::channel();
+
+        let leader = party0.elector.get_leader(&party0).unwrap();
+        println!("Leader: {leader}");
+
+        // Launch ballot tasks for each party
+        let ballot_task0 = tokio::spawn(async move {
+            match party0.launch_ballot().await {
+                Ok(Some(value)) => {
+                    let _ = value_sender0.send(value);
+                }
+                Ok(None) => {
+                    eprintln!("Party 0: No value was selected");
+                }
+                Err(err) => {
+                    eprintln!("Party 0 encountered an error: {:?}", err);
+                }
+            }
+        });
+
+        let ballot_task1 = tokio::spawn(async move {
+            match party1.launch_ballot().await {
+                Ok(Some(value)) => {
+                    let _ = value_sender1.send(value);
+                }
+                Ok(None) => {
+                    eprintln!("Party 1: No value was selected");
+                }
+                Err(err) => {
+                    eprintln!("Party 1 encountered an error: {:?}", err);
+                }
+            }
+        });
+
+        let ballot_task2 = tokio::spawn(async move {
+            match party2.launch_ballot().await {
+                Ok(Some(value)) => {
+                    let _ = value_sender2.send(value);
+                }
+                Ok(None) => {
+                    eprintln!("Party 2: No value was selected");
+                }
+                Err(err) => {
+                    eprintln!("Party 2 encountered an error: {:?}", err);
+                }
+            }
+        });
+
+        let ballot_task3 = tokio::spawn(async move {
+            match party3.launch_ballot().await {
+                Ok(Some(value)) => {
+                    let _ = value_sender3.send(value);
+                }
+                Ok(None) => {
+                    eprintln!("Party 3: No value was selected");
+                }
+                Err(err) => {
+                    eprintln!("Party 3 encountered an error: {:?}", err);
+                }
+            }
+        });
+
+        // Simulate message passing between the parties
+        tokio::spawn(async move {
+            let mut receivers = vec![
+                msg_out_receiver0,
+                msg_out_receiver1,
+                msg_out_receiver2,
+                msg_out_receiver3,
+            ];
+            let senders = vec![
+                msg_in_sender0,
+                msg_in_sender1,
+                msg_in_sender2,
+                msg_in_sender3,
+            ];
+
+            loop {
+                for i in 0..receivers.len() {
+                    if let Ok(msg) = receivers[i].try_recv() {
+                        // Broadcast the message to all other parties
+                        for j in 0..senders.len() {
+                            if i != j {
+                                let _ = senders[j].send(msg.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Delay to simulate network latency
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+
+        // Await the completion of ballot tasks
+        ballot_task0.await.unwrap();
+        ballot_task1.await.unwrap();
+        ballot_task2.await.unwrap();
+        ballot_task3.await.unwrap();
+
+        // Await results from each party
+        let value0 = value_receiver0.await.unwrap();
+        let value1 = value_receiver1.await.unwrap();
+        let value2 = value_receiver2.await.unwrap();
+        let value3 = value_receiver3.await.unwrap();
+
+        // Check that all parties reached the same consensus value
+        assert_eq!(value0, value1, "Party 0 and 1 agreed on the same value");
+        assert_eq!(value1, value2, "Party 1 and 2 agreed on the same value");
+        assert_eq!(value2, value3, "Party 2 and 3 agreed on the same value");
     }
 }
