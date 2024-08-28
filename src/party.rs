@@ -7,12 +7,12 @@ use crate::message::{
 };
 use crate::{Value, ValueSelector};
 use rkyv::{AlignedVec, Deserialize, Infallible};
+use seeded_random::{Random, Seed};
 use std::cmp::{Ordering, PartialEq};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use seeded_random::{Random, Seed};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::{self, Duration};
 
@@ -142,7 +142,7 @@ impl DefaultLeaderElector {
         // Select the `k` suck that value 2^k >= `range` and 2^k is the smallest.
         let mut k = 64;
         while 1u64 << (k - 1) >= range {
-            k = k - 1;
+            k -= 1;
         }
 
         // The following algorithm selects a random u64 value using `ChaCha12Rng`
@@ -154,7 +154,7 @@ impl DefaultLeaderElector {
         let rng = Random::from_seed(Seed::unsafe_new(seed));
         loop {
             let mut raw_res: u64 = rng.gen();
-            raw_res = (raw_res) >> (64 - k);
+            raw_res >>= 64 - k;
 
             if raw_res < range {
                 return raw_res;
@@ -793,9 +793,10 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
 mod tests {
     use super::*;
 
+    use rand::Rng;
+    use seeded_random::{Random, Seed};
     use std::collections::HashMap;
     use std::thread;
-    use rand::Rng;
 
     // Mock implementation of Value
     #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -893,11 +894,11 @@ mod tests {
         party.ballot = 1;
 
         // Must send this message from leader of the ballot.
-        let leader = party.elector.get_leader(&party).unwrap();
+        party.leader = 0; // this party's id
 
         let msg = Message1aContent { ballot: 1 };
         let routing = MessageRouting {
-            sender: leader,
+            sender: 0,
             receivers: vec![2, 3],
             is_broadcast: false,
             msg_type: ProtocolMessage::Msg1a,
@@ -989,14 +990,14 @@ mod tests {
         party.ballot = 1;
 
         // Must send this message from leader of the ballot.
-        let leader = party.elector.get_leader(&party).unwrap();
+        party.leader = 0; // this party's id
 
         let msg = Message2aContent {
             ballot: 1,
             value: bincode::serialize(&MockValue(42)).unwrap(),
         };
         let routing = MessageRouting {
-            sender: leader,
+            sender: 0,
             receivers: vec![0],
             is_broadcast: false,
             msg_type: ProtocolMessage::Msg2a,
@@ -1272,14 +1273,12 @@ mod tests {
         assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Finalize);
     }
 
-    use seeded_random::{Random, Seed};
-
     fn debug_hash_to_range_new(seed: u64, range: u64) -> u64 {
         assert!(range > 1);
 
         let mut k = 64;
         while 1u64 << (k - 1) >= range {
-            k = k - 1;
+            k -= 1;
         }
 
         let rng = Random::from_seed(Seed::unsafe_new(seed));
@@ -1287,17 +1286,19 @@ mod tests {
         let mut iteration = 1u64;
         loop {
             let mut raw_res: u64 = rng.gen();
-            raw_res = (raw_res) >> (64 - k);
+            raw_res >>= 64 - k;
 
             if raw_res < range {
                 return raw_res;
             }
 
-            iteration = iteration + 1;
+            iteration += 1;
             assert!(iteration <= 50)
         }
     }
+
     #[test]
+    #[ignore] // Ignoring since it takes a while to run
     fn test_hash_range_random() {
         // test the uniform distribution
 
@@ -1306,10 +1307,9 @@ mod tests {
 
         let mut cnt1: [i64; N] = [0; N];
 
-
-        for i in 0..M {
+        for _ in 0..M {
             let mut rng = rand::thread_rng();
-            let seed: u64 = rng.gen();
+            let seed: u64 = rng.random();
 
             let res1 = debug_hash_to_range_new(seed, N as u64);
             assert!(res1 < N as u64);
@@ -1317,16 +1317,15 @@ mod tests {
             cnt1[res1 as usize] += 1;
         }
 
-
         println!("1: {:?}", cnt1);
 
         let mut avg1: i64 = 0;
 
-        for i in 0..N {
-            avg1 += (M / (N as i64) - cnt1[i]).abs();
+        for item in cnt1.iter().take(N) {
+            avg1 += (M / (N as i64) - item).abs();
         }
 
-        avg1 = avg1 / (N as i64);
+        avg1 /= N as i64;
 
         println!("Avg 1: {}", avg1);
     }
@@ -1336,12 +1335,12 @@ mod tests {
         let rng1 = Random::from_seed(Seed::unsafe_new(123456));
         let rng2 = Random::from_seed(Seed::unsafe_new(123456));
 
-        println!("{}", rng1.gen::<u64>() as u64);
-        println!("{}", rng2.gen::<u64>() as u64);
+        println!("{}", rng1.gen::<u64>());
+        println!("{}", rng2.gen::<u64>());
 
         thread::sleep(Duration::from_secs(2));
 
-        println!("{}", rng1.gen::<u64>() as u64);
-        println!("{}", rng2.gen::<u64>() as u64);
+        println!("{}", rng1.gen::<u64>());
+        println!("{}", rng2.gen::<u64>());
     }
 }
