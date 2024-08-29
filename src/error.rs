@@ -1,5 +1,5 @@
 use crate::party::{PartyEvent, PartyStatus};
-use crate::Value;
+use crate::value::Value;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

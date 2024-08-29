@@ -1,5 +1,5 @@
 use crate::party::Party;
-use crate::{Value, ValueSelector};
+use crate::value::{Value, ValueSelector};
 use seeded_random::{Random, Seed};
 use std::cmp::Ordering;
 use std::hash::{DefaultHasher, Hash, Hasher};

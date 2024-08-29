@@ -15,7 +15,7 @@ use crate::message::{
     Message1aContent, Message1bContent, Message2aContent, Message2avContent, Message2bContent,
     MessagePacket, MessageRoundState, ProtocolMessage,
 };
-use crate::{Value, ValueSelector};
+use crate::value::{Value, ValueSelector};
 use log::{debug, warn};
 use std::cmp::PartialEq;
 use std::collections::hash_map::Entry::Vacant;
