@@ -35,3 +35,21 @@ pub struct BPConConfig {
     /// Timeout for a graceful period to help parties with latency.
     pub grace_period: Duration,
 }
+
+impl BPConConfig {
+    pub fn with_default_timeouts(party_weights: Vec<u64>, threshold: u128) -> Self {
+        Self {
+            party_weights,
+            threshold,
+            // TODO: deduce actually good defaults
+            launch_timeout: Duration::from_secs(1),
+            launch1a_timeout: Duration::from_secs(5),
+            launch1b_timeout: Duration::from_secs(10),
+            launch2a_timeout: Duration::from_secs(15),
+            launch2av_timeout: Duration::from_secs(20),
+            launch2b_timeout: Duration::from_secs(25),
+            finalize_timeout: Duration::from_secs(30),
+            grace_period: Duration::from_secs(2),
+        }
+    }
+}

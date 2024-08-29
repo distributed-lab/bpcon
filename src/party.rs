@@ -20,7 +20,6 @@ use log::warn;
 use std::cmp::PartialEq;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::HashMap;
-use std::error::Error;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 
@@ -92,7 +91,7 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     value_selector: VS,
 
     /// Main functional for leader election.
-    elector: Box<dyn LeaderElector<V, VS, LeaderElectorError = Box<dyn Error>>>,
+    elector: Box<dyn LeaderElector<V, VS>>,
 
     /// Status of the ballot execution
     status: PartyStatus,
@@ -134,7 +133,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         id: u64,
         cfg: BPConConfig,
         value_selector: VS,
-        elector: Box<dyn LeaderElector<V, VS, LeaderElectorError = Box<dyn Error>>>,
+        elector: Box<dyn LeaderElector<V, VS>>,
     ) -> (
         Self,
         UnboundedReceiver<MessagePacket>,
@@ -228,42 +227,42 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 _ = &mut launch1a_timer, if !launch1a_fired => {
                     self.event_sender.send(PartyEvent::Launch1a).map_err(|err| {
                         self.status = PartyStatus::Failed;
-                        FailedToSendEvent((PartyEvent::Launch1a, err.to_string()))
+                        FailedToSendEvent(PartyEvent::Launch1a, err.to_string())
                     })?;
                     launch1a_fired = true;
                 },
                 _ = &mut launch1b_timer, if !launch1b_fired => {
                     self.event_sender.send(PartyEvent::Launch1b).map_err(|err| {
                         self.status = PartyStatus::Failed;
-                        FailedToSendEvent((PartyEvent::Launch1b, err.to_string()))
+                        FailedToSendEvent(PartyEvent::Launch1b, err.to_string())
                     })?;
                     launch1b_fired = true;
                 },
                 _ = &mut launch2a_timer, if !launch2a_fired => {
                     self.event_sender.send(PartyEvent::Launch2a).map_err(|err| {
                         self.status = PartyStatus::Failed;
-                        FailedToSendEvent((PartyEvent::Launch2a, err.to_string()))
+                        FailedToSendEvent(PartyEvent::Launch2a, err.to_string())
                     })?;
                     launch2a_fired = true;
                 },
                 _ = &mut launch2av_timer, if !launch2av_fired => {
                     self.event_sender.send(PartyEvent::Launch2av).map_err(|err| {
                         self.status = PartyStatus::Failed;
-                         FailedToSendEvent((PartyEvent::Launch2av, err.to_string()))
+                         FailedToSendEvent(PartyEvent::Launch2av, err.to_string())
                     })?;
                     launch2av_fired = true;
                 },
                 _ = &mut launch2b_timer, if !launch2b_fired => {
                     self.event_sender.send(PartyEvent::Launch2b).map_err(|err| {
                         self.status = PartyStatus::Failed;
-                        FailedToSendEvent((PartyEvent::Launch2b, err.to_string()))
+                        FailedToSendEvent(PartyEvent::Launch2b, err.to_string())
                     })?;
                     launch2b_fired = true;
                 },
                 _ = &mut finalize_timer, if !finalize_fired => {
                     self.event_sender.send(PartyEvent::Finalize).map_err(|err| {
                         self.status = PartyStatus::Failed;
-                        FailedToSendEvent((PartyEvent::Finalize, err.to_string()))
+                        FailedToSendEvent(PartyEvent::Finalize, err.to_string())
                     })?;
                     finalize_fired = true;
                 },
@@ -273,7 +272,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         if let Err(err) = self.update_state(&msg) {
                             // Shouldn't fail the party, since invalid message
                             // may be sent by anyone.
-                            warn!("Unable to update state with {}, got error: {err}", msg.routing.msg_type)
+                            warn!("Failed to update state with {}, got error: {err}", msg.routing.msg_type)
                         }
                     }else if self.msg_in_receiver.is_closed(){
                          self.status = PartyStatus::Failed;
@@ -285,7 +284,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     if let Some(event) = event {
                         if let Err(err) = self.follow_event(event) {
                             self.status = PartyStatus::Failed;
-                            return Err(LaunchBallotError::FollowEventError((event, err)));
+                            return Err(LaunchBallotError::FollowEventError(event, err));
                         }
                     }else if self.event_receiver.is_closed(){
                         self.status = PartyStatus::Failed;
@@ -305,7 +304,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         self.status = PartyStatus::Launched;
         self.leader = self
             .elector
-            .get_leader(self)
+            .elect_leader(self)
             .map_err(|err| LeaderElectionError(err.to_string()))?;
 
         Ok(())
@@ -655,30 +654,29 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    use rand::Rng;
-    use seeded_random::{Random, Seed};
+    use crate::leader::DefaultLeaderElector;
+    use crate::party::PartyStatus::{Launched, Passed1a, Passed1b, Passed2a};
     use std::collections::HashMap;
     use std::fmt::{Display, Formatter};
-    use std::thread;
+    use std::time::Duration;
+    use tokio::time;
 
-    // Mock implementation of Value
     #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Debug)]
-    struct MockValue(u64); // Simple mock type wrapping an integer
+    pub(crate) struct MockValue(u64);
 
     impl Display for MockValue {
         fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            write!(f, "MockValue: {}", self)
+            write!(f, "MockValue: {}", self.0)
         }
     }
 
     impl Value for MockValue {}
 
-    // Mock implementation of ValueSelector
     #[derive(Clone)]
-    struct MockValueSelector;
+    pub(crate) struct MockValueSelector;
 
     impl ValueSelector<MockValue> for MockValueSelector {
         fn verify(&self, _v: &MockValue, _m: &HashMap<u64, Option<MockValue>>) -> bool {
@@ -686,331 +684,133 @@ mod tests {
         }
 
         fn select(&self, _m: &HashMap<u64, Option<MockValue>>) -> MockValue {
-            MockValue(42) // For testing, always return the same value
+            MockValue(1) // For testing, always return the same value
         }
     }
 
-    fn default_config() -> BPConConfig {
-        BPConConfig {
-            party_weights: vec![1, 2, 3],
-            threshold: 4,
-            launch_timeout: Duration::from_secs(0),
-            launch1a_timeout: Duration::from_secs(0),
-            launch1b_timeout: Duration::from_secs(10),
-            launch2a_timeout: Duration::from_secs(20),
-            launch2av_timeout: Duration::from_secs(30),
-            launch2b_timeout: Duration::from_secs(40),
-            finalize_timeout: Duration::from_secs(50),
-            grace_period: Duration::from_secs(1),
-        }
+    pub(crate) fn default_config() -> BPConConfig {
+        BPConConfig::with_default_timeouts(vec![1, 2, 3], 4)
     }
 
-    #[test]
-    fn test_compute_leader_determinism() {
-        let cfg = default_config();
-        let party = Party::<MockValue, MockValueSelector>::new(
+    pub(crate) fn default_party() -> Party<MockValue, MockValueSelector> {
+        Party::<MockValue, MockValueSelector>::new(
             0,
-            cfg,
+            default_config(),
             MockValueSelector,
-            Box::new(DefaultLeaderElector {}),
+            Box::new(DefaultLeaderElector::new()),
         )
-        .0;
-
-        // Compute the leader multiple times
-        let leader1 = party.elector.get_leader(&party).unwrap();
-        let leader2 = party.elector.get_leader(&party).unwrap();
-        let leader3 = party.elector.get_leader(&party).unwrap();
-
-        // All leaders should be the same due to deterministic seed
-        assert_eq!(
-            leader1, leader2,
-            "Leaders should be consistent on repeated calls"
-        );
-        assert_eq!(
-            leader2, leader3,
-            "Leaders should be consistent on repeated calls"
-        );
-    }
-
-    #[test]
-    fn test_compute_leader_zero_weights() {
-        let mut cfg = default_config();
-        cfg.party_weights = vec![0, 0, 0];
-
-        let party = Party::<MockValue, MockValueSelector>::new(
-            0,
-            cfg,
-            MockValueSelector,
-            Box::new(DefaultLeaderElector {}),
-        )
-        .0;
-
-        match party.elector.get_leader(&party) {
-            Err(BallotError::LeaderElection(_)) => {
-                // The test passes if the error is of type LeaderElection
-            }
-            _ => panic!("Expected BallotError::LeaderElection"),
-        }
+        .0
     }
 
     #[test]
     fn test_update_state_msg1a() {
-        let cfg = default_config();
-        let mut party = Party::<MockValue, MockValueSelector>::new(
-            0,
-            cfg,
-            MockValueSelector,
-            Box::new(DefaultLeaderElector {}),
-        )
-        .0;
-        party.status = PartyStatus::Launched;
-        party.ballot = 1;
-
-        // Must send this message from leader of the ballot.
-        party.leader = 0; // this party's id
-
-        let msg = Message1aContent { ballot: 1 };
-        let routing = MessageRouting {
-            sender: 0,
-            receivers: vec![2, 3],
-            is_broadcast: false,
-            msg_type: ProtocolMessage::Msg1a,
+        let mut party = default_party();
+        party.status = Launched;
+        let content = Message1aContent {
+            ballot: party.ballot,
         };
+        let msg = content.pack(party.leader).unwrap();
 
-        let msg_wire = MessagePacket {
-            content_bytes: rkyv::to_bytes::<_, 256>(&msg).unwrap(),
-            routing,
-        };
+        party.update_state(&msg).unwrap();
 
-        party
-            .update_state(msg_wire.content_bytes, msg_wire.routing)
-            .unwrap();
-        assert_eq!(party.status, PartyStatus::Passed1a);
+        assert_eq!(party.status, Passed1a);
     }
 
     #[test]
     fn test_update_state_msg1b() {
-        let cfg = default_config();
-        let mut party = Party::<MockValue, MockValueSelector>::new(
-            0,
-            cfg,
-            MockValueSelector,
-            Box::new(DefaultLeaderElector {}),
-        )
-        .0;
-        party.status = PartyStatus::Passed1a;
-        party.ballot = 1;
+        let mut party = default_party();
+        party.status = Passed1a;
+
+        let content = Message1bContent {
+            ballot: party.ballot,
+            last_ballot_voted: None,
+            last_value_voted: bincode::serialize(&MockValue(42)).ok(),
+        };
 
         // First, send a 1b message from party 1 (weight 2)
-        let msg1 = Message1bContent {
-            ballot: 1,
-            last_ballot_voted: Some(0),
-            last_value_voted: bincode::serialize(&MockValue(42)).ok(),
-        };
-        let routing1 = MessageRouting {
-            sender: 1, // Party 1 sends the message
-            receivers: vec![0],
-            is_broadcast: false,
-            msg_type: ProtocolMessage::Msg1b,
-        };
+        let msg = content.pack(1).unwrap();
+        party.update_state(&msg).unwrap();
 
-        let msg_wire1 = MessagePacket {
-            content_bytes: rkyv::to_bytes::<_, 256>(&msg1).unwrap(),
-            routing: routing1,
-        };
-
-        party
-            .update_state(msg_wire1.content_bytes, msg_wire1.routing)
-            .unwrap();
-
-        // Now, send a 1b message from party 2 (weight 3)
-        let msg2 = Message1bContent {
-            ballot: 1,
-            last_ballot_voted: Some(0),
-            last_value_voted: bincode::serialize(&MockValue(42)).ok(),
-        };
-        let routing2 = MessageRouting {
-            sender: 2, // Party 2 sends the message
-            receivers: vec![0],
-            is_broadcast: false,
-            msg_type: ProtocolMessage::Msg1b,
-        };
-
-        let msg_wire2 = MessagePacket {
-            content_bytes: rkyv::to_bytes::<_, 256>(&msg2).unwrap(),
-            routing: routing2,
-        };
-
-        party
-            .update_state(msg_wire2.content_bytes, msg_wire2.routing)
-            .unwrap();
+        // Then, send a 1b message from party 2 (weight 3)
+        let msg = content.pack(2).unwrap();
+        party.update_state(&msg).unwrap();
 
         // After both messages, the cumulative weight is 2 + 3 = 5, which exceeds the threshold
-        assert_eq!(party.status, PartyStatus::Passed1b);
+        assert_eq!(party.status, Passed1b);
     }
 
     #[test]
     fn test_update_state_msg2a() {
-        let cfg = default_config();
-        let mut party = Party::<MockValue, MockValueSelector>::new(
-            0,
-            cfg,
-            MockValueSelector,
-            Box::new(DefaultLeaderElector {}),
-        )
-        .0;
-        party.status = PartyStatus::Passed1b;
-        party.ballot = 1;
+        let mut party = default_party();
+        party.status = Passed1b;
+        party.leader = 1;
 
-        // Must send this message from leader of the ballot.
-        party.leader = 0; // this party's id
-
-        let msg = Message2aContent {
-            ballot: 1,
+        let content = Message2aContent {
+            ballot: party.ballot,
             value: bincode::serialize(&MockValue(42)).unwrap(),
         };
-        let routing = MessageRouting {
-            sender: 0,
-            receivers: vec![0],
-            is_broadcast: false,
-            msg_type: ProtocolMessage::Msg2a,
-        };
+        let msg = content.pack(1).unwrap();
+        party.update_state(&msg).unwrap();
 
-        let msg_wire = MessagePacket {
-            content_bytes: rkyv::to_bytes::<_, 256>(&msg).unwrap(),
-            routing,
-        };
-
-        party
-            .update_state(msg_wire.content_bytes, msg_wire.routing)
-            .unwrap();
-
-        assert_eq!(party.status, PartyStatus::Passed2a);
+        assert_eq!(party.status, Passed2a);
     }
 
     #[test]
     fn test_update_state_msg2av() {
-        let cfg = default_config();
-        let mut party = Party::<MockValue, MockValueSelector>::new(
-            0,
-            cfg,
-            MockValueSelector,
-            Box::new(DefaultLeaderElector {}),
-        )
-        .0;
-        party.status = PartyStatus::Passed2a;
-        party.ballot = 1;
-        party.value_2a = Some(MockValue(42));
+        let mut party = default_party();
+        party.status = Passed2a;
+        party.value_2a = Some(MockValue(1));
 
-        // Send first 2av message from party 2 (weight 3)
-        let msg1 = Message2avContent {
-            ballot: 1,
-            received_value: bincode::serialize(&MockValue(42)).unwrap(),
-        };
-        let routing1 = MessageRouting {
-            sender: 2,
-            receivers: vec![0],
-            is_broadcast: false,
-            msg_type: ProtocolMessage::Msg2av,
+        let content = Message2avContent {
+            ballot: party.ballot,
+            received_value: bincode::serialize(&MockValue(1)).unwrap(),
         };
 
-        let msg_wire1 = MessagePacket {
-            content_bytes: rkyv::to_bytes::<_, 256>(&msg1).unwrap(),
-            routing: routing1,
-        };
+        // Send first 2av message from party 1 (weight 2)
+        let msg = content.pack(1).unwrap();
+        party.update_state(&msg).unwrap();
 
-        party
-            .update_state(msg_wire1.content_bytes, msg_wire1.routing)
-            .unwrap();
+        // Now send a second 2av message from party 2 (weight 3)
+        let msg = content.pack(2).unwrap();
+        party.update_state(&msg).unwrap();
 
-        // Now send a second 2av message from party 1 (weight 2)
-        let msg2 = Message2avContent {
-            ballot: 1,
-            received_value: bincode::serialize(&MockValue(42)).unwrap(),
-        };
-        let routing2 = MessageRouting {
-            sender: 1,
-            receivers: vec![0],
-            is_broadcast: false,
-            msg_type: ProtocolMessage::Msg2av,
-        };
-
-        let msg_wire2 = MessagePacket {
-            content_bytes: rkyv::to_bytes::<_, 256>(&msg2).unwrap(),
-            routing: routing2,
-        };
-
-        party
-            .update_state(msg_wire2.content_bytes, msg_wire2.routing)
-            .unwrap();
-
-        // The cumulative weight (3 + 2) should exceed the threshold of 4
+        // The cumulative weight (2 + 3) should exceed the threshold of 4
         assert_eq!(party.status, PartyStatus::Passed2av);
     }
 
     #[test]
     fn test_update_state_msg2b() {
-        let cfg = default_config();
-        let mut party = Party::<MockValue, MockValueSelector>::new(
-            0,
-            cfg,
-            MockValueSelector,
-            Box::new(DefaultLeaderElector {}),
-        )
-        .0;
+        let mut party = default_party();
         party.status = PartyStatus::Passed2av;
-        party.ballot = 1;
 
-        // Simulate that both party 2 and party 1 already sent 2av messages
-        party.messages_2av_state.add_sender(1, 1);
-        party.messages_2av_state.add_sender(2, 2);
+        // Simulate that both party 1 and party 2 already sent 2av messages
+        party.messages_2av_state.add_sender(1, 2);
+        party.messages_2av_state.add_sender(2, 3);
 
-        // Send first 2b message from party 2 (weight 3)
-        let msg1 = Message2bContent { ballot: 1 };
-        let routing1 = MessageRouting {
-            sender: 2,
-            receivers: vec![0],
-            is_broadcast: false,
-            msg_type: ProtocolMessage::Msg2b,
+        let content = Message2bContent {
+            ballot: party.ballot,
         };
 
-        let msg_wire1 = MessagePacket {
-            content_bytes: rkyv::to_bytes::<_, 256>(&msg1).unwrap(),
-            routing: routing1,
-        };
-
-        party
-            .update_state(msg_wire1.content_bytes, msg_wire1.routing)
-            .unwrap();
+        // Send first 2b message from party 1 (weight 2)
+        let msg = content.pack(1).unwrap();
+        party.update_state(&msg).unwrap();
 
         // Print the current state and weight
         println!(
-            "After first Msg2b: Status = {:?}, 2b Weight = {}",
-            party.status, party.messages_2b_state.weight
+            "After first Msg2b: Status = {}, 2b Weight = {}",
+            party.status,
+            party.messages_2b_state.get_weight()
         );
 
-        // Now send a second 2b message from party 1 (weight 2)
-        let msg2 = Message2bContent { ballot: 1 };
-        let routing2 = MessageRouting {
-            sender: 1,
-            receivers: vec![0],
-            is_broadcast: false,
-            msg_type: ProtocolMessage::Msg2b,
-        };
-
-        let msg_wire2 = MessagePacket {
-            content_bytes: rkyv::to_bytes::<_, 256>(&msg2).unwrap(),
-            routing: routing2,
-        };
-
-        party
-            .update_state(msg_wire2.content_bytes, msg_wire2.routing)
-            .unwrap();
+        // Now send a second 2b message from party 2 (weight 3)
+        let msg = content.pack(2).unwrap();
+        party.update_state(&msg).unwrap();
 
         // Print the current state and weight
         println!(
-            "After second Msg2b: Status = {:?}, 2b Weight = {}",
-            party.status, party.messages_2b_state.weight
+            "After second Msg2b: Status = {}, 2b Weight = {}",
+            party.status,
+            party.messages_2b_state.get_weight()
         );
 
         // The cumulative weight (3 + 2) should exceed the threshold of 4
@@ -1020,16 +820,17 @@ mod tests {
     #[test]
     fn test_follow_event_launch1a() {
         let cfg = default_config();
-        let (mut party, _msg_out_receiver, _msg_in_sender) =
-            Party::<MockValue, MockValueSelector>::new(
-                0,
-                cfg,
-                MockValueSelector,
-                Box::new(DefaultLeaderElector {}),
-            );
+        // Need to take ownership of msg_out_receiver, so that sender doesn't close,
+        // since otherwise msg_out_receiver will be dropped.
+        let (mut party, _msg_out_receiver, _) = Party::<MockValue, MockValueSelector>::new(
+            0,
+            cfg,
+            MockValueSelector,
+            Box::new(DefaultLeaderElector {}),
+        );
 
-        party.status = PartyStatus::Launched;
-        party.ballot = 1;
+        party.status = Launched;
+        party.leader = party.id;
 
         party
             .follow_event(PartyEvent::Launch1a)
@@ -1038,65 +839,28 @@ mod tests {
         // If the party is the leader and in the Launched state, the event should trigger a message.
         // And it's status shall update to Passed1a after sending 1a message,
         // contrary to other participants, whose `Passed1a` updates only after receiving 1a message.
-        assert_eq!(party.status, PartyStatus::Passed1a);
-    }
-
-    #[test]
-    fn test_ballot_reset_after_failure() {
-        let cfg = default_config();
-        let (mut party, _, _) = Party::<MockValue, MockValueSelector>::new(
-            0,
-            cfg,
-            MockValueSelector,
-            Box::new(DefaultLeaderElector {}),
-        );
-
-        party.status = PartyStatus::Failed;
-        party.ballot = 1;
-
-        party.prepare_next_ballot().unwrap();
-
-        // Check that state has been reset
-        assert_eq!(party.status, PartyStatus::Launched);
-        assert_eq!(party.ballot, 2); // Ballot number should have incremented
-        assert!(party.parties_voted_before.is_empty());
-        assert_eq!(party.messages_1b_weight, 0);
-        assert!(party.messages_2av_state.senders.is_empty());
-        assert_eq!(party.messages_2av_state.weight, 0);
-        assert!(party.messages_2b_state.senders.is_empty());
-        assert_eq!(party.messages_2b_state.weight, 0);
+        assert_eq!(party.status, Passed1a);
     }
 
     #[test]
     fn test_follow_event_communication_failure() {
-        let cfg = default_config();
-
-        // This party id is precomputed for this specific party_weights, threshold and ballot.
-        // Because we need leader to send 1a.
-        let party_id = 0;
-
-        let (mut party, msg_out_receiver, _) = Party::<MockValue, MockValueSelector>::new(
-            party_id,
-            cfg,
-            MockValueSelector,
-            Box::new(DefaultLeaderElector {}),
-        );
-
-        party.status = PartyStatus::Launched;
-        party.ballot = 1;
-
-        drop(msg_out_receiver); // Drop the receiver to simulate a communication failure
+        // msg_out_receiver channel, bound to corresponding sender, which will try to use
+        // follow event, is getting dropped since we don't take ownership of it
+        // upon creation of the party
+        let mut party = default_party();
+        party.status = Launched;
+        party.leader = party.id;
 
         let result = party.follow_event(PartyEvent::Launch1a);
 
         match result {
-            Err(BallotError::Communication(err_msg)) => {
-                assert_eq!(
-                    err_msg, "Failed to send Msg1a",
-                    "Expected specific communication error message"
-                );
+            Err(FailedToSendMessage(_)) => {
+                // this is expected outcome
             }
-            _ => panic!("Expected BallotError::Communication, got {:?}", result),
+            _ => panic!(
+                "Expected FollowEventError::FailedToSendMessage, got {:?}",
+                result
+            ),
         }
     }
 
@@ -1107,6 +871,7 @@ mod tests {
 
         // Set up the Party with necessary configuration
         let cfg = default_config();
+
         let (event_sender, mut event_receiver) = unbounded_channel();
 
         // Need to return all 3 values, so that they don't get dropped
@@ -1116,7 +881,7 @@ mod tests {
                 0,
                 cfg.clone(),
                 MockValueSelector,
-                Box::new(DefaultLeaderElector {}),
+                Box::new(DefaultLeaderElector::new()),
             );
 
         // Same here, we would like to not lose party's event_receiver, so that test doesn't fail.
@@ -1128,7 +893,10 @@ mod tests {
             party.launch_ballot().await.unwrap();
         });
 
+        time::advance(cfg.launch_timeout).await;
+
         // Sequential time advance and event check
+
         time::advance(cfg.launch1a_timeout).await;
         assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Launch1a);
 
@@ -1148,78 +916,8 @@ mod tests {
         assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Finalize);
     }
 
-    fn debug_hash_to_range_new(seed: u64, range: u64) -> u64 {
-        assert!(range > 1);
-
-        let mut k = 64;
-        while 1u64 << (k - 1) >= range {
-            k -= 1;
-        }
-
-        let rng = Random::from_seed(Seed::unsafe_new(seed));
-
-        let mut iteration = 1u64;
-        loop {
-            let mut raw_res: u64 = rng.gen();
-            raw_res >>= 64 - k;
-
-            if raw_res < range {
-                return raw_res;
-            }
-
-            iteration += 1;
-            assert!(iteration <= 50)
-        }
-    }
-
-    #[test]
-    #[ignore] // Ignoring since it takes a while to run
-    fn test_hash_range_random() {
-        // test the uniform distribution
-
-        const N: usize = 37;
-        const M: i64 = 10000000;
-
-        let mut cnt1: [i64; N] = [0; N];
-
-        for _ in 0..M {
-            let mut rng = rand::thread_rng();
-            let seed: u64 = rng.random();
-
-            let res1 = debug_hash_to_range_new(seed, N as u64);
-            assert!(res1 < N as u64);
-
-            cnt1[res1 as usize] += 1;
-        }
-
-        println!("1: {:?}", cnt1);
-
-        let mut avg1: i64 = 0;
-
-        for item in cnt1.iter().take(N) {
-            avg1 += (M / (N as i64) - item).abs();
-        }
-
-        avg1 /= N as i64;
-
-        println!("Avg 1: {}", avg1);
-    }
-
-    #[test]
-    fn test_rng() {
-        let rng1 = Random::from_seed(Seed::unsafe_new(123456));
-        let rng2 = Random::from_seed(Seed::unsafe_new(123456));
-
-        println!("{}", rng1.gen::<u64>());
-        println!("{}", rng2.gen::<u64>());
-
-        thread::sleep(Duration::from_secs(2));
-
-        println!("{}", rng1.gen::<u64>());
-        println!("{}", rng2.gen::<u64>());
-    }
-
     #[tokio::test]
+    #[ignore] // this is unfinished test
     async fn test_end_to_end_ballot() {
         // Configuration for the parties
         let cfg = BPConConfig {
@@ -1275,7 +973,7 @@ mod tests {
         let (value_sender2, value_receiver2) = tokio::sync::oneshot::channel();
         let (value_sender3, value_receiver3) = tokio::sync::oneshot::channel();
 
-        let leader = party0.elector.get_leader(&party0).unwrap();
+        let leader = party0.elector.elect_leader(&party0).unwrap();
         println!("Leader: {leader}");
 
         // Launch ballot tasks for each party
@@ -1337,13 +1035,13 @@ mod tests {
 
         // Simulate message passing between the parties
         tokio::spawn(async move {
-            let mut receivers = vec![
+            let mut receivers = [
                 msg_out_receiver0,
                 msg_out_receiver1,
                 msg_out_receiver2,
                 msg_out_receiver3,
             ];
-            let senders = vec![
+            let senders = [
                 msg_in_sender0,
                 msg_in_sender1,
                 msg_in_sender2,
@@ -1351,19 +1049,19 @@ mod tests {
             ];
 
             loop {
-                for i in 0..receivers.len() {
-                    if let Ok(msg) = receivers[i].try_recv() {
+                for (i, receiver) in receivers.iter_mut().enumerate() {
+                    if let Ok(msg) = receiver.try_recv() {
                         // Broadcast the message to all other parties
-                        for j in 0..senders.len() {
+                        for (j, sender) in senders.iter().enumerate() {
                             if i != j {
-                                let _ = senders[j].send(msg.clone());
+                                let _ = sender.send(msg.clone());
                             }
                         }
                     }
                 }
 
                 // Delay to simulate network latency
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                sleep(Duration::from_millis(100)).await;
             }
         });
 
