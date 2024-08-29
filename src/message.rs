@@ -14,7 +14,7 @@ pub struct MessagePacket {
 }
 
 /// Full routing information for the message.
-#[derive(Debug, Copy, Clone)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub struct MessageRouting {
     /// Which participant this message came from.
     pub sender: u64,
@@ -23,13 +23,19 @@ pub struct MessageRouting {
 }
 
 /// Representation of message types of the consensus.
-#[derive(Debug, Copy, Clone)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum ProtocolMessage {
     Msg1a,
     Msg1b,
     Msg2a,
     Msg2av,
     Msg2b,
+}
+
+impl std::fmt::Display for ProtocolMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ProtocolMessage: {:?}", self)
+    }
 }
 
 // Value in messages is stored in serialized format, i.e bytes in order to omit
@@ -111,7 +117,7 @@ impl_packable!(Message2avContent, ProtocolMessage::Msg2av);
 impl_packable!(Message2bContent, ProtocolMessage::Msg2b);
 
 /// A struct to keep track of senders and the cumulative weight of their messages.
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Default)]
 pub struct MessageRoundState {
     senders: HashSet<u64>,
     weight: u128,
@@ -120,10 +126,7 @@ pub struct MessageRoundState {
 impl MessageRoundState {
     /// Creates a new instance of `MessageRoundState`.
     pub fn new() -> Self {
-        Self {
-            senders: HashSet::new(),
-            weight: 0,
-        }
+        Self::default()
     }
 
     pub fn get_weight(&self) -> u128 {

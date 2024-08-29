@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 
+pub mod config;
 pub mod error;
 pub mod leader;
 pub mod message;
@@ -21,6 +22,4 @@ pub trait ValueSelector<V: Value>: Clone {
 
     /// Select value depending on inner conditions. Accepts 2b messages from parties.
     fn select(&self, m: &HashMap<u64, Option<V>>) -> V;
-
-    // TODO: add other fields to update selector state.
 }

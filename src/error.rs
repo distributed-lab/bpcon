@@ -1,14 +1,14 @@
 //! Definition of the BPCon errors.
 
-use crate::party::PartyStatus;
+use crate::party::{PartyEvent, PartyStatus};
 use crate::Value;
 use std::fmt::{Display, Formatter, Result};
 
 pub enum LaunchBallotError {
-    FailedToSendEvent(String),
+    FailedToSendEvent((PartyEvent, String)),
     EventChannelClosed,
     MessageChannelClosed,
-    FollowEventError(FollowEventError),
+    FollowEventError((PartyEvent, FollowEventError)),
     LeaderElectionError(String),
 }
 
@@ -57,12 +57,6 @@ pub enum SerializationError {
     Value(String),
 }
 
-impl From<FollowEventError> for LaunchBallotError {
-    fn from(error: FollowEventError) -> Self {
-        LaunchBallotError::FollowEventError(error)
-    }
-}
-
 impl From<PartyStatusMismatch> for FollowEventError {
     fn from(error: PartyStatusMismatch) -> Self {
         FollowEventError::PartyStatusMismatch(error)
@@ -109,7 +103,7 @@ impl Display for PartyStatusMismatch {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write!(
             f,
-            "Party status mismatch: party status is {:?} whilst needed status is {:?}.",
+            "party status mismatch: party status is {} whilst needed status is {}",
             self.party_status, self.needed_status
         )
     }
@@ -119,7 +113,7 @@ impl Display for BallotNumberMismatch {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write!(
             f,
-            "Ballot number mismatch: party's ballot number is {} whilst received {} in the message.",
+            "ballot number mismatch: party's ballot number is {} whilst received {} in the message",
             self.party_ballot_number, self.message_ballot_number
         )
     }
@@ -129,7 +123,7 @@ impl Display for LeaderMismatch {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write!(
             f,
-            "Leader mismatch: party's leader is {} whilst the message was sent by {}.",
+            "leader mismatch: party's leader is {} whilst the message was sent by {}",
             self.party_leader, self.message_sender
         )
     }
@@ -139,7 +133,7 @@ impl<V: Value> Display for ValueMismatch<V> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write!(
             f,
-            "Value mismatch: party's value is {} whilst received {} in the message.",
+            "value mismatch: party's value is {} whilst received {} in the message",
             self.party_value, self.message_value
         )
     }
@@ -149,10 +143,10 @@ impl Display for DeserializationError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
             DeserializationError::Message(err) => {
-                write!(f, "Message deserialization error: {}", err)
+                write!(f, "message deserialization error: {err}")
             }
             DeserializationError::Value(err) => {
-                write!(f, "Value deserialization error: {}", err)
+                write!(f, "value deserialization error: {err}")
             }
         }
     }
@@ -162,10 +156,10 @@ impl Display for SerializationError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
             SerializationError::Message(err) => {
-                write!(f, "Message serialization error: {}", err)
+                write!(f, "message serialization error: {err}")
             }
             SerializationError::Value(err) => {
-                write!(f, "Value serialization error: {}", err)
+                write!(f, "value serialization error: {err}")
             }
         }
     }
@@ -173,41 +167,39 @@ impl Display for SerializationError {
 
 impl Display for LaunchBallotError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "launch ballot error: ")?;
         match *self {
-            LaunchBallotError::FailedToSendEvent(ref err) => write!(
-                f,
-                "Got error while running ballot: failed to send event: {}",
-                err
-            ),
+            LaunchBallotError::FailedToSendEvent((ref event, ref err)) => {
+                write!(f, "failed to send event {event}: {err}",)
+            }
             LaunchBallotError::EventChannelClosed => {
-                write!(f, "Got error while running ballot: event channel closed")
+                write!(f, "event channel closed")
             }
             LaunchBallotError::MessageChannelClosed => {
-                write!(f, "Got error while running ballot: message channel closed")
+                write!(f, "message channel closed")
             }
-            LaunchBallotError::FollowEventError(ref err) => {
-                write!(f, "Got error while running ballot: {}", err)
+            LaunchBallotError::FollowEventError((ref event, ref err)) => {
+                write!(f, "failed to follow event {event}: {err}",)
             }
-            LaunchBallotError::LeaderElectionError(ref err) => write!(
-                f,
-                "Got error while running ballot: leader election error{}",
-                err
-            ),
+            LaunchBallotError::LeaderElectionError(ref err) => {
+                write!(f, "leader election error: {err}",)
+            }
         }
     }
 }
 
 impl Display for FollowEventError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "follow event error: ")?;
         match *self {
             FollowEventError::PartyStatusMismatch(ref err) => {
-                write!(f, "Unable to follow event: {}", err)
+                write!(f, "{err}")
             }
             FollowEventError::SerializationError(ref err) => {
-                write!(f, "Unable to follow event: {}", err)
+                write!(f, "{err}")
             }
             FollowEventError::FailedToSendMessage(ref err) => {
-                write!(f, "Unable to follow event: {}", err)
+                write!(f, "{err}")
             }
         }
     }
@@ -215,24 +207,25 @@ impl Display for FollowEventError {
 
 impl<V: Value> Display for UpdateStateError<V> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "update state error: ")?;
         match *self {
             UpdateStateError::PartyStatusMismatch(ref err) => {
-                write!(f, "Unable to update state: {}", err)
+                write!(f, "{err}")
             }
             UpdateStateError::BallotNumberMismatch(ref err) => {
-                write!(f, "Unable to update state: {}", err)
+                write!(f, "{err}")
             }
             UpdateStateError::LeaderMismatch(ref err) => {
-                write!(f, "Unable to update state: {}", err)
+                write!(f, "{err}")
             }
             UpdateStateError::ValueMismatch(ref err) => {
-                write!(f, "Unable to update state: {}", err)
+                write!(f, "{err}")
             }
             UpdateStateError::ValueVerificationFailed => {
-                write!(f, "Unable to update state: value verification failed")
+                write!(f, "value verification failed")
             }
             UpdateStateError::DeserializationError(ref err) => {
-                write!(f, "Unable to update state: {}", err)
+                write!(f, "{err}")
             }
         }
     }
