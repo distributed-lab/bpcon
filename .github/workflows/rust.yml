@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - main
+      - epic/*
   push:
     branches:
       - main
