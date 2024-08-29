@@ -1,4 +1,8 @@
-//! Definition of the BPCon participant structure.
+//! Definitions central to BPCon participant.
+//!
+//! This module contains the implementation of a `Party` in the BPCon consensus protocol.
+//! The `Party` manages the execution of the ballot, handles incoming messages, and coordinates with other participants
+//! to reach a consensus. It uses various components such as leader election and value selection to perform its duties.
 
 use crate::config::BPConConfig;
 use crate::error::FollowEventError::FailedToSendMessage;
@@ -23,8 +27,10 @@ use std::collections::HashMap;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 
-/// Party status defines the statuses of the ballot for the particular participant
-/// depending on local calculations.
+/// Represents the status of a `Party` in the BPCon consensus protocol.
+///
+/// The status indicates the current phase or outcome of the ballot execution for this party.
+/// It transitions through various states as the party progresses through the protocol.
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum PartyStatus {
     None,
@@ -44,7 +50,9 @@ impl std::fmt::Display for PartyStatus {
     }
 }
 
-/// Party events is used for the ballot flow control.
+/// Represents the events that control the flow of the ballot process in a `Party`.
+///
+/// These events trigger transitions between different phases of the protocol.
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum PartyEvent {
     Launch1a,
@@ -61,74 +69,90 @@ impl std::fmt::Display for PartyEvent {
     }
 }
 
-/// Party of the BPCon protocol that executes ballot.
+/// A participant in the BPCon protocol responsible for executing ballots.
 ///
-/// The communication between party and external
-/// system is done via `in_receiver` and `out_sender` channels. External system should take
-/// care about authentication while receiving incoming messages and then push them to the
-/// corresponding `Sender` to the `in_receiver`. Same, it should tke care about listening of new
-/// messages in the corresponding `Receiver` to the `out_sender` and submitting them to the
-/// corresponding party based on information in `MessageRouting`.
+/// A `Party` manages the execution of ballots by communicating with other parties, processing incoming messages,
+/// and following the protocol's steps. It uses an internal state machine to track its progress through the ballot process.
 ///
-/// After finishing of the ballot protocol, party will place the selected value to the
-/// `value_sender` or `BallotError` if ballot failed.
+/// # Communication
+/// - `msg_in_receiver`: Receives incoming messages from other parties.
+/// - `msg_out_sender`: Sends outgoing messages to other parties.
+/// - `event_receiver`: Receives events that drive the ballot process.
+/// - `event_sender`: Sends events to trigger actions in the ballot process.
+///
+/// The `Party` operates within a BPCon configuration and relies on a `ValueSelector` to choose values during the consensus process.
+/// A `LeaderElector` is used to determine the leader for each ballot.
 pub struct Party<V: Value, VS: ValueSelector<V>> {
-    /// This party's identifier.
+    /// The identifier of this party.
     pub id: u64,
 
-    /// Communication queues.
+    /// Queue for receiving incoming messages.
     msg_in_receiver: UnboundedReceiver<MessagePacket>,
+    /// Queue for sending outgoing messages.
     msg_out_sender: UnboundedSender<MessagePacket>,
 
-    /// Query to receive and send events that run ballot protocol
+    /// Queue for receiving events that control the ballot process.
     event_receiver: UnboundedReceiver<PartyEvent>,
+    /// Queue for sending events that control the ballot process.
     event_sender: UnboundedSender<PartyEvent>,
 
-    /// BPCon config (e.g. ballot time bounds, parties weights, etc.).
+    /// BPCon configuration settings, including timeouts and party weights.
     pub(crate) cfg: BPConConfig,
 
-    /// Main functional for value selection.
+    /// Component responsible for selecting values during the consensus process.
     value_selector: VS,
 
-    /// Main functional for leader election.
+    /// Component responsible for electing a leader for each ballot.
     elector: Box<dyn LeaderElector<V, VS>>,
 
-    /// Status of the ballot execution
+    /// The current status of the ballot execution for this party.
     status: PartyStatus,
 
-    /// Current ballot number
+    /// The current ballot number.
     pub(crate) ballot: u64,
 
-    /// Current ballot leader
+    /// The leader for the current ballot.
     leader: u64,
 
-    /// Last ballot where party submitted 2b message
+    /// The last ballot number where this party submitted a 2b message.
     last_ballot_voted: Option<u64>,
 
-    /// Last value for which party submitted 2b message
+    /// The last value for which this party submitted a 2b message.
     last_value_voted: Option<V>,
 
-    /// Local round fields
-
-    /// 1b round state
-    ///
-    parties_voted_before: HashMap<u64, Option<V>>, // id <-> value
+    // Local round fields
+    /// The state of 1b round, tracking which parties have voted and their corresponding values.
+    parties_voted_before: HashMap<u64, Option<V>>,
+    /// The cumulative weight of 1b messages received.
     messages_1b_weight: u128,
 
-    /// 2a round state
-    ///
+    /// The state of 2a round, storing the value proposed by this party.
     value_2a: Option<V>,
 
-    /// 2av round state
-    ///
+    /// The state of 2av round, tracking which parties have confirmed the 2a value.
     messages_2av_state: MessageRoundState,
 
-    /// 2b round state
-    ///
+    /// The state of 2b round, tracking which parties have sent 2b messages.
     messages_2b_state: MessageRoundState,
 }
 
 impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
+    /// Creates a new `Party` instance.
+    ///
+    /// This constructor sets up the party with the given ID, BPCon configuration, value selector, and leader elector.
+    /// It also initializes communication channels for receiving and sending messages and events.
+    ///
+    /// # Parameters
+    /// - `id`: The unique identifier for this party.
+    /// - `cfg`: The BPCon configuration settings.
+    /// - `value_selector`: The component responsible for selecting values during the consensus process.
+    /// - `elector`: The component responsible for electing the leader for each ballot.
+    ///
+    /// # Returns
+    /// - A tuple containing:
+    ///   - The new `Party` instance.
+    ///   - The `UnboundedReceiver` for outgoing messages.
+    ///   - The `UnboundedSender` for incoming messages.
     pub fn new(
         id: u64,
         cfg: BPConConfig,
@@ -169,18 +193,32 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         )
     }
 
+    /// Returns the current ballot number.
     pub fn ballot(&self) -> u64 {
         self.ballot
     }
 
+    /// Checks if the ballot process has been launched.
+    ///
+    /// # Returns
+    /// - `true` if the ballot is currently active; `false` otherwise.
     pub fn is_launched(&self) -> bool {
         !self.is_stopped()
     }
 
+    /// Checks if the ballot process has been stopped.
+    ///
+    /// # Returns
+    /// - `true` if the ballot has finished or failed; `false` otherwise.
     pub fn is_stopped(&self) -> bool {
         self.status == PartyStatus::Finished || self.status == PartyStatus::Failed
     }
 
+    /// Retrieves the selected value if the ballot process has finished successfully.
+    ///
+    /// # Returns
+    /// - `Some(V)` if the ballot reached a consensus and the value was selected.
+    /// - `None` if the ballot did not reach consensus or is still ongoing.
     pub fn get_value_selected(&self) -> Option<V> {
         // Only `Finished` status means reached BFT agreement
         if self.status == PartyStatus::Finished {
@@ -190,10 +228,27 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         None
     }
 
+    /// Selects a value based on the current state of the party.
+    ///
+    /// This method delegates to the `ValueSelector` to determine the value that should be selected
+    /// based on the votes received in the 1b round.
+    ///
+    /// # Returns
+    /// - The value selected by the `ValueSelector`.
     fn get_value(&self) -> V {
         self.value_selector.select(&self.parties_voted_before)
     }
 
+    /// Launches the ballot process.
+    ///
+    /// This method initiates the ballot process, advancing through the different phases of the protocol
+    /// by sending and receiving events and messages. It handles timeouts for each phase and processes
+    /// incoming messages to update the party's state.
+    ///
+    /// # Returns
+    /// - `Ok(Some(V))`: The selected value if the ballot reaches consensus.
+    /// - `Ok(None)`: If the ballot process is terminated without reaching consensus.
+    /// - `Err(LaunchBallotError)`: If an error occurs during the ballot process.
     pub async fn launch_ballot(&mut self) -> Result<Option<V>, LaunchBallotError> {
         self.prepare_next_ballot()?;
 
@@ -298,7 +353,13 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         Ok(self.get_value_selected())
     }
 
-    /// Prepare state before running a ballot.
+    /// Prepares the party's state for the next ballot.
+    ///
+    /// This method resets the party's state, increments the ballot number, and elects a new leader.
+    ///
+    /// # Returns
+    /// - `Ok(())`: If the preparation is successful.
+    /// - `Err(LaunchBallotError)`: If an error occurs during leader election.
     fn prepare_next_ballot(&mut self) -> Result<(), LaunchBallotError> {
         self.reset_state();
         self.ballot += 1;
@@ -311,6 +372,9 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         Ok(())
     }
 
+    /// Resets the party's state for a new round of ballot execution.
+    ///
+    /// This method clears the state associated with previous rounds and prepares the party for the next ballot.
     fn reset_state(&mut self) {
         self.parties_voted_before = HashMap::new();
         self.messages_1b_weight = 0;
@@ -323,7 +387,17 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         while self.msg_in_receiver.try_recv().is_ok() {}
     }
 
-    /// Update party's state based on message type.
+    /// Updates the party's state based on an incoming message.
+    ///
+    /// This method processes a message according to its type and updates the party's internal state accordingly.
+    /// It performs validation checks to ensure that the message is consistent with the current ballot and protocol rules.
+    ///
+    /// # Parameters
+    /// - `msg`: The incoming `MessagePacket` to be processed.
+    ///
+    /// # Returns
+    /// - `Ok(())`: If the state is successfully updated.
+    /// - `Err(UpdateStateError<V>)`: If an error occurs during the update, such as a mismatch in the ballot number or leader.
     fn update_state(&mut self, msg: &MessagePacket) -> Result<(), UpdateStateError<V>> {
         let routing = msg.routing;
 
@@ -522,6 +596,16 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     }
 
     /// Executes ballot actions according to the received event.
+    ///
+    /// This method processes an event and triggers the corresponding action in the ballot process,
+    /// such as launching a new phase or finalizing the ballot.
+    ///
+    /// # Parameters
+    /// - `event`: The `PartyEvent` to process.
+    ///
+    /// # Returns
+    /// - `Ok(())`: If the event is successfully processed.
+    /// - `Err(FollowEventError)`: If an error occurs while processing the event.
     fn follow_event(&mut self, event: PartyEvent) -> Result<(), FollowEventError> {
         match event {
             PartyEvent::Launch1a => {
