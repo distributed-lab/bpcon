@@ -2,15 +2,29 @@
 name = "bpcon"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "BPCon: A Byzantine Fault-Tolerant Consensus Protocol Implementation in Rust."
+license = "MIT"
+repository = "https://github.com/distributed-lab/bpcon"
+homepage = "https://github.com/distributed-lab/bpcon"
+documentation = "https://distributed-lab.github.io/bpcon/"
+keywords = ["consensus", "byzantine", "protocol", "distributed-systems", "blockchain"]
+categories = ["algorithms"]
+authors = ["Distributed Lab"]
+readme = "README.md"
 
 [dependencies]
-log = "0.4.22"
-rkyv = { version = "0.7.44", features = ["validation"]}
-serde = { version = "1.0.207", features = ["derive"] }
-bincode = "1.3.3"
-tokio = { version = "1.39.2", features = ["full", "test-util"] }
-rand = "0.9.0-alpha.2"
-seeded-random = "0.6.0"
-thiserror = "1.0.63"
+log = "^0.4.22"
+serde = { version = "^1.0.207", features = ["derive"] }
+bincode = "^1.3.3"
+rkyv = { version = "^0.7.44", features = ["validation"] }
+tokio = { version = "^1.39.2", features = ["full"] }
+rand = "^0.9.0-alpha.2"
+seeded-random = "^0.6.0"
+thiserror = "^1.0.63"
+
+[features]
+default = ["full"]
+full = ["tokio/full", "rkyv/validation"]
+
+[dev-dependencies]
+tokio = { version = "^1.39.2", features = ["test-util"] }
