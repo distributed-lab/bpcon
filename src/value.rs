@@ -25,7 +25,7 @@ pub trait Value: Eq + Serialize + for<'a> Deserialize<'a> + Clone + Debug + Disp
 ///   can be selected. This implies that a party should not vote for different values, even across
 ///   different ballots.
 /// - **Consensus Compliance**: The selection process should consider the state of messages (typically
-///   from 2b messages) sent by other parties, ensuring the selected value is compliant with the
+///   from 1b messages) sent by other parties, ensuring the selected value is compliant with the
 ///   collective state of the consensus.
 ///
 /// # Type Parameters

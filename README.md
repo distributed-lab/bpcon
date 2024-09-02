@@ -20,7 +20,13 @@ Compiled documentation for `main` branch is available at [GitBook](https://distr
 bpcon = {version = "0.1.0", git = "https://github.com/distributed-lab/bpcon"}
 ```
 
-### Implement `Value` trait for consensus subject
+### Implement [Value](https://distributed-lab.github.io/bpcon/bpcon/value/trait.Value.html) trait
+
+This is a core trait, which defines what type are you selecting in your consensus.
+It may be the next block in blockchain, or leader for some operation, or anything else you need.
+
+Below is a simple example, where we will operate on selection for `u64` type. 
+Using it you may interpret `ID` for leader of distributed operation, for instance.
 
 ```rust
 ...
@@ -32,7 +38,12 @@ pub(crate) struct MyValue(u64);
 impl Value for MyValue {}
 ```
 
-### Implement `ValueSelector` trait
+### Implement [ValueSelector](https://distributed-lab.github.io/bpcon/bpcon/value/trait.ValueSelector.html) trait
+
+`BPCon` allows you to define specific conditions how proposer (leader) will select value 
+and how other members will verify its selection.
+
+Here is a simple example:
 
 ```rust
 ...
@@ -76,10 +87,17 @@ impl ValueSelector<MyValue> for MyValueSelector {
 }
 ```
 
-### Decide on a `LeaderElector`
+### Decide on a [LeaderElector](https://distributed-lab.github.io/bpcon/bpcon/leader/trait.LeaderElector.html)
 
-We provide functionality to define your own rules for leader election using corresponding trait.
-Note, that there is already default `LeaderElector` available.
+`LeaderElector` trait allows you to define specific conditions, how to select leader for consensus.
+
+__NOTE: it is important to provide deterministic mechanism, 
+because each participant will compute leader for itself 
+and in case it is not deterministic, state divergence occurs.__
+
+We also provide ready-to-use 
+[DefaultLeaderElector](https://distributed-lab.github.io/bpcon/bpcon/leader/struct.DefaultLeaderElector.html)
+which is using weighted randomization.
 
 ### Configure your ballot
 
@@ -97,12 +115,14 @@ use bpcon::config::BPConConfig;
 let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1, 1, 1], 4);
 ```
 
-Feel free to explore `config.rs` for more information.
+Feel free to explore [config.rs](https://distributed-lab.github.io/bpcon/bpcon/config/struct.BPConConfig.html) 
+for more information.
 
 ### Create parties
 
 Having `BPConConfig`, `ValueSelector` and `LeaderElector` defined, instantiate your parties. 
-Check out `new` method on a `Party` struct.
+Check out [new](https://distributed-lab.github.io/bpcon/bpcon/party/struct.Party.html#method.new)
+method on a `Party` struct.
 
 ### Launch ballot on parties and handle messages
 
