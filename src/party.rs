@@ -1136,4 +1136,32 @@ pub(crate) mod tests {
 
         analyze_ballot_result(values);
     }
+
+    #[tokio::test]
+    async fn test_ballot_faulty_party() {
+        let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1], 2);
+
+        let (mut parties, mut channels) = create_parties(cfg);
+
+        let leader = parties[0].leader;
+
+        assert_ne!(
+            parties[3].id, leader,
+            "Should not fail the leader for the test to pass"
+        );
+
+        // Simulate failure of `f` faulty participants:
+        let parties = parties.drain(..3).collect();
+        let channels = channels.drain(..3).collect();
+
+        let ballot_tasks = launch_parties(parties);
+
+        let p2p_task = propagate_messages_p2p(channels);
+
+        let values = extract_values_from_ballot_tasks(ballot_tasks).await;
+
+        p2p_task.abort();
+
+        analyze_ballot_result(values);
+    }
 }
