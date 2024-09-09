@@ -474,7 +474,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     self.messages_1b_weight +=
                         self.cfg.party_weights[routing.sender as usize] as u128;
 
-                    if self.messages_1b_weight > self.cfg.threshold {
+                    if self.messages_1b_weight >= self.cfg.threshold {
                         self.status = PartyStatus::Passed1b;
                     }
                 }
@@ -554,7 +554,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         self.cfg.party_weights[routing.sender as usize] as u128,
                     );
 
-                    if self.messages_2av_state.get_weight() > self.cfg.threshold {
+                    if self.messages_2av_state.get_weight() >= self.cfg.threshold {
                         self.status = PartyStatus::Passed2av;
                     }
                 }
@@ -586,7 +586,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         self.cfg.party_weights[routing.sender as usize] as u128,
                     );
 
-                    if self.messages_2b_state.get_weight() > self.cfg.threshold {
+                    if self.messages_2b_state.get_weight() >= self.cfg.threshold {
                         self.status = PartyStatus::Passed2b;
                     }
                 }
@@ -1122,7 +1122,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_ballot_happy_case() {
-        let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1], 2);
+        let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1], 3);
 
         let (parties, channels) = create_parties(cfg);
 

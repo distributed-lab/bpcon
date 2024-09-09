@@ -18,7 +18,7 @@ pub struct BPConConfig {
 
     /// Threshold weight to define BFT quorum.
     ///
-    /// This value must be greater than 2/3 of the total weight of all parties combined.
+    /// This value must be greater than or equal to 2/3 of the total weight of all parties combined.
     /// The quorum is the minimum weight required to make decisions in the BPCon protocol.
     pub threshold: u128,
 
