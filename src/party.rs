@@ -1004,15 +1004,19 @@ pub(crate) mod tests {
         assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Finalize);
     }
 
+    // Type aggregating `receiver from` and `sender into` party, which are
+    // intended for external system to communicate with the party.
+    type PartyExternalChannels = (
+        UnboundedReceiver<MessagePacket>,
+        UnboundedSender<MessagePacket>,
+    );
+
     // Create test parties with predefined generics, based on config.
     fn create_parties(
         cfg: BPConConfig,
     ) -> (
         Vec<Party<MockValue, MockValueSelector>>,
-        Vec<(
-            UnboundedReceiver<MessagePacket>,
-            UnboundedSender<MessagePacket>,
-        )>,
+        Vec<PartyExternalChannels>,
     ) {
         let value_selector = MockValueSelector;
         let leader_elector = Box::new(DefaultLeaderElector::new());
