@@ -132,4 +132,4 @@ In a way, you shall propagate outgoing messages to other parties like:
 1. Listen for outgoing message using `msg_out_receiver`.
 2. Forward it to other parties using `msg_in_sender`.
 
-We welcome you to check `test_end_to_end_ballot` in `party.rs` for example.
+We welcome you to check our [integration tests](./tests) for examples.
