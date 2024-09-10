@@ -1,23 +1,24 @@
 use bpcon::config::BPConConfig;
 use bpcon::error::LaunchBallotError;
-use bpcon::leader::DefaultLeaderElector;
+use bpcon::leader::{DefaultLeaderElector, LeaderElector};
 use bpcon::message::{Message1bContent, MessagePacket};
-use bpcon::party::Party;
 
 use bpcon::test_mocks::{MockParty, MockValue, MockValueSelector};
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
-use tokio::time;
+use tokio::time::{sleep, Duration, Instant};
 
-// Here each party/receiver/sender shall correspond at equal indexes.
+use futures::future::join_all;
+
+/// Here each party/receiver/sender shall correspond at equal indexes.
 type PartiesWithChannels = (
     Vec<MockParty>,
     Vec<UnboundedReceiver<MessagePacket>>,
     Vec<UnboundedSender<MessagePacket>>,
 );
 
-// Create test parties with predefined generics, based on config.
+/// Create test parties with predefined generics, based on config.
 fn create_parties(cfg: BPConConfig) -> PartiesWithChannels {
     (0..cfg.party_weights.len())
         .map(|i| {
@@ -39,17 +40,17 @@ fn create_parties(cfg: BPConConfig) -> PartiesWithChannels {
         )
 }
 
-// Begin ballot process for each party.
+/// Begin ballot process for each party.
 fn launch_parties(
-    parties: Vec<Party<MockValue, MockValueSelector>>,
-) -> Vec<JoinHandle<Result<Option<MockValue>, LaunchBallotError>>> {
+    parties: Vec<MockParty>,
+) -> Vec<JoinHandle<Result<MockValue, LaunchBallotError>>> {
     parties
         .into_iter()
         .map(|mut party| tokio::spawn(async move { party.launch_ballot().await }))
         .collect()
 }
 
-// Collect messages from receivers.
+/// Collect messages from receivers.
 fn collect_messages(receivers: &mut [UnboundedReceiver<MessagePacket>]) -> Vec<MessagePacket> {
     receivers
         .iter_mut()
@@ -57,7 +58,7 @@ fn collect_messages(receivers: &mut [UnboundedReceiver<MessagePacket>]) -> Vec<M
         .collect()
 }
 
-// Broadcast collected messages to other parties, skipping the sender.
+/// Broadcast collected messages to other parties, skipping the sender.
 fn broadcast_messages(messages: Vec<MessagePacket>, senders: &[UnboundedSender<MessagePacket>]) {
     messages.iter().for_each(|msg| {
         senders
@@ -70,8 +71,8 @@ fn broadcast_messages(messages: Vec<MessagePacket>, senders: &[UnboundedSender<M
     });
 }
 
-// Propagate messages peer-to-peer between parties using their channels.
-fn propagate_messages_p2p(
+/// Propagate messages peer-to-peer between parties using their channels.
+fn propagate_p2p(
     mut receivers: Vec<UnboundedReceiver<MessagePacket>>,
     senders: Vec<UnboundedSender<MessagePacket>>,
 ) -> JoinHandle<()> {
@@ -80,99 +81,96 @@ fn propagate_messages_p2p(
             let messages = collect_messages(receivers.as_mut_slice());
             broadcast_messages(messages, &senders);
 
-            // Delay to simulate network latency.
-            time::sleep(time::Duration::from_millis(100)).await;
+            // Delay to simulate network latency and reduce processor load.
+            sleep(Duration::from_millis(100)).await;
         }
     })
 }
 
-// Await completion of each party's process and aggregate ok results.
-async fn extract_values_from_ballot_tasks(
-    tasks: Vec<JoinHandle<Result<Option<MockValue>, LaunchBallotError>>>,
-) -> Vec<MockValue> {
-    let mut values = Vec::new();
-    for (i, task) in tasks.into_iter().enumerate() {
-        let result = task.await.unwrap();
-
-        match result {
-            Ok(Some(value)) => {
-                values.push(value);
-            }
-            Ok(None) => {
-                // This shall never happen for finished party.
-                eprintln!("Party {}: No value was selected", i);
-            }
-            Err(err) => {
-                eprintln!("Party {} encountered an error: {:?}", i, err);
-            }
-        }
-    }
-    values
+/// Await completion of each party's process and aggregate results.
+async fn await_results(
+    tasks: Vec<JoinHandle<Result<MockValue, LaunchBallotError>>>,
+) -> Vec<Result<MockValue, LaunchBallotError>> {
+    join_all(tasks)
+        .await
+        .into_iter()
+        .map(|res| res.unwrap())
+        .collect()
 }
 
-// Use returned values from each party to analyze how ballot passed.
-fn analyze_ballot_result(values: Vec<MockValue>) {
-    match values.as_slice() {
-        [] => {
-            eprintln!("No consensus could be reached, as no values were selected by any party")
+/// Assert consensus reached and log all errors.
+fn analyze_ballot(results: Vec<Result<MockValue, LaunchBallotError>>) {
+    // Partition the results into successful values and errors.
+    let (successful, errors): (Vec<_>, Vec<_>) = results.into_iter().partition(|res| res.is_ok());
+
+    // Log errors if any.
+    if !errors.is_empty() {
+        for err in errors.into_iter() {
+            eprintln!("Error during ballot: {:?}", err.unwrap_err());
         }
-        [first_value, ..] => {
-            match values.iter().all(|v| v == first_value) {
-                true => println!(
-                    "All parties reached the same consensus value: {:?}",
-                    first_value
-                ),
-                false => eprintln!("Not all parties agreed on the same value"),
-            }
-            println!("Consensus agreed on value {first_value:?}");
-        }
+    }
+
+    if successful.is_empty() {
+        panic!("No consensus, all parties failed.");
+    }
+
+    // Extract the successful values.
+    let values: Vec<MockValue> = successful.into_iter().map(|res| res.unwrap()).collect();
+
+    // Check if we reached consensus: all values should be the same.
+    if let Some((first_value, rest)) = values.split_first() {
+        let all_agreed = rest.iter().all(|v| v == first_value);
+        assert!(
+            all_agreed,
+            "No consensus, different values found: {:?}",
+            values
+        );
+        println!("Consensus reached with value: {:?}", first_value);
     }
 }
 
 #[tokio::test]
 async fn test_ballot_happy_case() {
     let (parties, receivers, senders) = create_parties(BPConConfig::default());
-
     let ballot_tasks = launch_parties(parties);
-
-    let p2p_task = propagate_messages_p2p(receivers, senders);
-
-    let values = extract_values_from_ballot_tasks(ballot_tasks).await;
-
+    let p2p_task = propagate_p2p(receivers, senders);
+    let results = await_results(ballot_tasks).await;
     p2p_task.abort();
 
-    analyze_ballot_result(values);
+    analyze_ballot(results);
 }
 
 #[tokio::test]
 async fn test_ballot_faulty_party() {
     let (mut parties, mut receivers, mut senders) = create_parties(BPConConfig::default());
 
-    let leader = parties[0].ballot();
+    let elector = DefaultLeaderElector::new();
+    let leader = elector.elect_leader(&parties[0]).unwrap();
+    const FAULTY_PARTY_ID: u64 = 3;
+    assert_ne!(
+        FAULTY_PARTY_ID, leader,
+        "Should not fail the leader for the test to pass"
+    );
 
-    assert_ne!(3, leader, "Should not fail the leader for the test to pass");
-
-    // Simulate failure of `f` faulty participants:
-    let parties = parties.drain(..3).collect();
-    let receivers = receivers.drain(..3).collect();
-    let senders = senders.drain(..3).collect();
+    // Simulate failure excluding party from all processes:
+    parties.remove(FAULTY_PARTY_ID as usize);
+    receivers.remove(FAULTY_PARTY_ID as usize);
+    senders.remove(FAULTY_PARTY_ID as usize);
 
     let ballot_tasks = launch_parties(parties);
-
-    let p2p_task = propagate_messages_p2p(receivers, senders);
-
-    let values = extract_values_from_ballot_tasks(ballot_tasks).await;
-
+    let p2p_task = propagate_p2p(receivers, senders);
+    let results = await_results(ballot_tasks).await;
     p2p_task.abort();
 
-    analyze_ballot_result(values);
+    analyze_ballot(results);
 }
 
 #[tokio::test]
 async fn test_ballot_malicious_party() {
     let (parties, mut receivers, senders) = create_parties(BPConConfig::default());
 
-    let leader = parties[0].ballot();
+    let elector = DefaultLeaderElector::new();
+    let leader = elector.elect_leader(&parties[0]).unwrap();
     const MALICIOUS_PARTY_ID: u64 = 1;
 
     assert_ne!(
@@ -191,10 +189,13 @@ async fn test_ballot_malicious_party() {
     let malicious_msg = content.pack(MALICIOUS_PARTY_ID).unwrap();
 
     let ballot_tasks = launch_parties(parties);
-
     let p2p_task = tokio::spawn(async move {
-        let mut last_malicious_message_time = time::Instant::now();
-        let malicious_message_interval = time::Duration::from_millis(3000);
+        // It is responsibility of the external to party code - p2p module
+        // to rate-limit channels, because otherwise malicious
+        // actors would be able to DDoS ballot, bloating all the channel with malicious ones.
+        // For this test to pass, we will send malicious messages once in a while.
+        let mut last_malicious_message_time = Instant::now();
+        let malicious_message_interval = Duration::from_secs(3);
         loop {
             // Collect all messages first.
             let mut messages: Vec<_> = receivers
@@ -209,23 +210,21 @@ async fn test_ballot_malicious_party() {
                 })
                 .collect();
 
-            // Push the malicious message at intervals
-            // to mitigate bloating inner receiving channel.
+            // Push the malicious message at intervals.
             if last_malicious_message_time.elapsed() >= malicious_message_interval {
                 messages.push(malicious_msg.clone());
-                last_malicious_message_time = time::Instant::now();
+                last_malicious_message_time = Instant::now();
             }
 
             broadcast_messages(messages, &senders);
 
             // Delay to simulate network latency.
-            time::sleep(time::Duration::from_millis(100)).await;
+            sleep(Duration::from_millis(100)).await;
         }
     });
 
-    let values = extract_values_from_ballot_tasks(ballot_tasks).await;
-
+    let results = await_results(ballot_tasks).await;
     p2p_task.abort();
 
-    analyze_ballot_result(values);
+    analyze_ballot(results);
 }

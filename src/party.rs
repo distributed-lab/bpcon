@@ -253,7 +253,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     /// - `Ok(Some(V))`: The selected value if the ballot reaches consensus.
     /// - `Ok(None)`: If the ballot process is terminated without reaching consensus.
     /// - `Err(LaunchBallotError)`: If an error occurs during the ballot process.
-    pub async fn launch_ballot(&mut self) -> Result<Option<V>, LaunchBallotError> {
+    pub async fn launch_ballot(&mut self) -> Result<V, LaunchBallotError> {
         self.prepare_next_ballot()?;
 
         sleep(self.cfg.launch_timeout).await;
@@ -281,7 +281,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
         let mut launch2b_fired = false;
         let mut finalize_fired = false;
 
-        while self.is_launched() {
+        while self.status != PartyStatus::Finished {
             tokio::select! {
                 _ = &mut launch1a_timer, if !launch1a_fired => {
                     self.event_sender.send(PartyEvent::Launch1a).map_err(|err| {
@@ -354,13 +354,13 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         }
                     }else if self.event_receiver.is_closed(){
                         self.status = PartyStatus::Failed;
-                         return Err(EventChannelClosed)
+                        return Err(EventChannelClosed)
                     }
                 },
             }
         }
 
-        Ok(self.get_value_selected())
+        Ok(self.get_value_selected().unwrap())
     }
 
     /// Prepares the party's state for the next ballot.
