@@ -23,7 +23,7 @@ use crate::value::{Value, ValueSelector};
 use log::{debug, warn};
 use std::cmp::PartialEq;
 use std::collections::hash_map::Entry::Vacant;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 
@@ -120,6 +120,9 @@ pub struct Party<V: Value, VS: ValueSelector<V>> {
     /// The last value for which this party submitted a 2b message.
     last_value_voted: Option<V>,
 
+    /// DDoS prevention mechanism - we allow each party to send one message type per ballot.
+    rate_limiter: HashSet<(ProtocolMessage, u64)>,
+
     // Local round fields
     /// The state of 1b round, tracking which parties have voted and their corresponding values.
     parties_voted_before: HashMap<u64, Option<V>>,
@@ -182,6 +185,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 leader: 0,
                 last_ballot_voted: None,
                 last_value_voted: None,
+                rate_limiter: HashSet::new(),
                 parties_voted_before: HashMap::new(),
                 messages_1b_weight: 0,
                 value_2a: None,
@@ -324,13 +328,17 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                 msg = self.msg_in_receiver.recv() => {
                     sleep(self.cfg.grace_period).await;
                     if let Some(msg) = msg {
-                        debug!("Party {} received {} from party {}", self.id, msg.routing.msg_type, msg.routing.sender);
-                        if let Err(err) = self.update_state(&msg) {
-                            // Shouldn't fail the party, since invalid message
-                            // may be sent by anyone. Furthermore, since in consensus
-                            // we are relying on redundancy of parties, we actually may need
-                            // less messages than from every party to transit to next status.
-                            warn!("Failed to update state with {}, got error: {err}", msg.routing.msg_type)
+                        let meta = (msg.routing.msg_type, msg.routing.sender);
+                        if !self.rate_limiter.contains(&meta){
+                            debug!("Party {} received {} from party {}", self.id, meta.0, meta.1);
+                            if let Err(err) = self.update_state(&msg) {
+                                // Shouldn't fail the party, since invalid message
+                                // may be sent by anyone. Furthermore, since in consensus
+                                // we are relying on redundancy of parties, we actually may need
+                                // less messages than from every party to transit to next status.
+                                warn!("Failed to update state for party {} with {}, got error: {err}", self.id, meta.0)
+                            }
+                            self.rate_limiter.insert(meta);
                         }
                     }else if self.msg_in_receiver.is_closed(){
                          self.status = PartyStatus::Failed;
@@ -378,6 +386,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     ///
     /// This method clears the state associated with previous rounds and prepares the party for the next ballot.
     fn reset_state(&mut self) {
+        self.rate_limiter = HashSet::new();
         self.parties_voted_before = HashMap::new();
         self.messages_1b_weight = 0;
         self.value_2a = None;
@@ -1009,36 +1018,37 @@ pub(crate) mod tests {
         assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Finalize);
     }
 
-    // Type aggregating `receiver from` and `sender into` party, which are
-    // intended for external system to communicate with the party.
-    type PartyExternalChannels = (
-        UnboundedReceiver<MessagePacket>,
-        UnboundedSender<MessagePacket>,
+    // Here each party/receiver/sender shall correspond at equal indexes.
+    type PartiesWithChannels = (
+        Vec<Party<MockValue, MockValueSelector>>,
+        Vec<UnboundedReceiver<MessagePacket>>,
+        Vec<UnboundedSender<MessagePacket>>,
     );
 
     // Create test parties with predefined generics, based on config.
-    fn create_parties(
-        cfg: BPConConfig,
-    ) -> (
-        Vec<Party<MockValue, MockValueSelector>>,
-        Vec<PartyExternalChannels>,
-    ) {
+    fn create_parties(cfg: BPConConfig) -> PartiesWithChannels {
         let value_selector = MockValueSelector;
         let leader_elector = Box::new(DefaultLeaderElector::new());
 
         // Note: each weight corresponds to party, ergo their lengths are equal.
         (0..cfg.party_weights.len())
             .map(|i| {
-                let (party, receiver_from, sender_into) =
-                    Party::<MockValue, MockValueSelector>::new(
-                        i as u64,
-                        cfg.clone(),
-                        value_selector.clone(),
-                        leader_elector.clone(),
-                    );
-                (party, (receiver_from, sender_into))
+                Party::<MockValue, MockValueSelector>::new(
+                    i as u64,
+                    cfg.clone(),
+                    value_selector.clone(),
+                    leader_elector.clone(),
+                )
             })
-            .unzip()
+            .fold(
+                (Vec::new(), Vec::new(), Vec::new()),
+                |(mut parties, mut receivers, mut senders), (p, r, s)| {
+                    parties.push(p);
+                    receivers.push(r);
+                    senders.push(s);
+                    (parties, receivers, senders)
+                },
+            )
     }
 
     // Begin ballot process for each party.
@@ -1051,34 +1061,39 @@ pub(crate) mod tests {
             .collect()
     }
 
+    // Collect messages from receivers.
+    fn collect_messages(receivers: &mut [UnboundedReceiver<MessagePacket>]) -> Vec<MessagePacket> {
+        receivers
+            .iter_mut()
+            .filter_map(|receiver| receiver.try_recv().ok())
+            .collect()
+    }
+
+    // Broadcast collected messages to other parties, skipping the sender.
+    fn broadcast_messages(
+        messages: Vec<MessagePacket>,
+        senders: &[UnboundedSender<MessagePacket>],
+    ) {
+        messages.iter().for_each(|msg| {
+            senders
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| msg.routing.sender != *i as u64) // Skip the current party (sender).
+                .for_each(|(_, sender_into)| {
+                    sender_into.send(msg.clone()).unwrap();
+                });
+        });
+    }
+
     // Propagate messages peer-to-peer between parties using their channels.
     fn propagate_messages_p2p(
-        mut channels: Vec<(
-            UnboundedReceiver<MessagePacket>,
-            UnboundedSender<MessagePacket>,
-        )>,
+        mut receivers: Vec<UnboundedReceiver<MessagePacket>>,
+        senders: Vec<UnboundedSender<MessagePacket>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
-                // Collect all messages first.
-                let messages_to_broadcast: Vec<_> = channels
-                    .iter_mut()
-                    .enumerate()
-                    .filter_map(|(i, (receiver_from, _))| {
-                        receiver_from.try_recv().ok().map(|msg| (i, msg))
-                    })
-                    .collect();
-
-                // Broadcast collected messages to other parties, skipping the sender.
-                messages_to_broadcast.iter().for_each(|(i, msg)| {
-                    channels
-                        .iter()
-                        .enumerate()
-                        .filter(|(j, _)| i != j) // Skip the current party (sender).
-                        .for_each(|(_, (_, sender_into))| {
-                            sender_into.send(msg.clone()).unwrap();
-                        });
-                });
+                let messages = collect_messages(receivers.as_mut_slice());
+                broadcast_messages(messages, &senders);
 
                 // Delay to simulate network latency.
                 sleep(Duration::from_millis(100)).await;
@@ -1133,11 +1148,11 @@ pub(crate) mod tests {
     async fn test_ballot_happy_case() {
         let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1], 3);
 
-        let (parties, channels) = create_parties(cfg);
+        let (parties, receivers, senders) = create_parties(cfg);
 
         let ballot_tasks = launch_parties(parties);
 
-        let p2p_task = propagate_messages_p2p(channels);
+        let p2p_task = propagate_messages_p2p(receivers, senders);
 
         let values = extract_values_from_ballot_tasks(ballot_tasks).await;
 
@@ -1150,22 +1165,84 @@ pub(crate) mod tests {
     async fn test_ballot_faulty_party() {
         let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1], 3);
 
-        let (mut parties, mut channels) = create_parties(cfg);
+        let (mut parties, mut receivers, mut senders) = create_parties(cfg);
 
         let leader = parties[0].leader;
 
-        assert_ne!(
-            parties[3].id, leader,
-            "Should not fail the leader for the test to pass"
-        );
+        assert_ne!(3, leader, "Should not fail the leader for the test to pass");
 
         // Simulate failure of `f` faulty participants:
         let parties = parties.drain(..3).collect();
-        let channels = channels.drain(..3).collect();
+        let receivers = receivers.drain(..3).collect();
+        let senders = senders.drain(..3).collect();
 
         let ballot_tasks = launch_parties(parties);
 
-        let p2p_task = propagate_messages_p2p(channels);
+        let p2p_task = propagate_messages_p2p(receivers, senders);
+
+        let values = extract_values_from_ballot_tasks(ballot_tasks).await;
+
+        p2p_task.abort();
+
+        analyze_ballot_result(values);
+    }
+
+    #[tokio::test]
+    async fn test_ballot_malicious_party() {
+        let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1], 3);
+
+        let (parties, mut receivers, senders) = create_parties(cfg);
+
+        let leader = parties[0].leader;
+        const MALICIOUS_PARTY_ID: u64 = 1;
+
+        assert_ne!(
+            MALICIOUS_PARTY_ID, leader,
+            "Should not make malicious the leader for the test to pass"
+        );
+
+        // We will be simulating malicious behaviour
+        // sending 1b message (meaning, 5/6 times at incorrect stage) with the wrong data.
+        let content = &Message1bContent {
+            ballot: parties[0].ballot + 1, // divergent ballot number
+            last_ballot_voted: Some(parties[0].ballot + 1), // early ballot number
+            // shouldn't put malformed serialized value, because we won't be able to pack it
+            last_value_voted: None,
+        };
+        let malicious_msg = content.pack(MALICIOUS_PARTY_ID).unwrap();
+
+        let ballot_tasks = launch_parties(parties);
+
+        let p2p_task = tokio::spawn(async move {
+            let mut last_malicious_message_time = time::Instant::now();
+            let malicious_message_interval = Duration::from_millis(3000);
+            loop {
+                // Collect all messages first.
+                let mut messages: Vec<_> = receivers
+                    .iter_mut()
+                    .enumerate()
+                    .filter_map(|(i, receiver)| {
+                        // Skip receiving messages from the malicious party
+                        // to substitute it with invalid one to be propagated.
+                        (i != MALICIOUS_PARTY_ID as usize)
+                            .then(|| receiver.try_recv().ok())
+                            .flatten()
+                    })
+                    .collect();
+
+                // Push the malicious message at intervals
+                // to mitigate bloating inner receiving channel.
+                if last_malicious_message_time.elapsed() >= malicious_message_interval {
+                    messages.push(malicious_msg.clone());
+                    last_malicious_message_time = time::Instant::now();
+                }
+
+                broadcast_messages(messages, &senders);
+
+                // Delay to simulate network latency.
+                sleep(Duration::from_millis(100)).await;
+            }
+        });
 
         let values = extract_values_from_ballot_tasks(ballot_tasks).await;
 
