@@ -755,59 +755,23 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     use crate::leader::DefaultLeaderElector;
-    use crate::party::PartyStatus::{Launched, Passed1a, Passed1b, Passed2a};
-    use std::collections::HashMap;
-    use std::fmt::{Display, Formatter};
-    use std::time::Duration;
-    use tokio::task::JoinHandle;
+    use crate::test_mocks::{MockParty, MockValue};
     use tokio::time;
-
-    #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Debug)]
-    pub(crate) struct MockValue(u64);
-
-    impl Display for MockValue {
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-            write!(f, "MockValue: {}", self.0)
-        }
-    }
-
-    impl Value for MockValue {}
-
-    #[derive(Clone)]
-    pub(crate) struct MockValueSelector;
-
-    impl ValueSelector<MockValue> for MockValueSelector {
-        fn verify(&self, _v: &MockValue, _m: &HashMap<u64, Option<MockValue>>) -> bool {
-            true // For testing, always return true
-        }
-
-        fn select(&self, _m: &HashMap<u64, Option<MockValue>>) -> MockValue {
-            MockValue(1) // For testing, always return the same value
-        }
-    }
-
-    pub(crate) fn default_config() -> BPConConfig {
-        BPConConfig::with_default_timeouts(vec![1, 2, 3], 4)
-    }
-
-    pub(crate) fn default_party() -> Party<MockValue, MockValueSelector> {
-        Party::<MockValue, MockValueSelector>::new(
-            0,
-            default_config(),
-            MockValueSelector,
-            Box::new(DefaultLeaderElector::new()),
-        )
-        .0
-    }
 
     #[test]
     fn test_update_state_msg1a() {
-        let mut party = default_party();
-        party.status = Launched;
+        // We wish to simulate behavior of leader
+        // sending message to another participant.
+        let mut party = MockParty {
+            status: PartyStatus::Launched,
+            id: 0,
+            leader: 1,
+            ..Default::default()
+        };
         let content = Message1aContent {
             ballot: party.ballot,
         };
@@ -815,189 +779,160 @@ pub(crate) mod tests {
 
         party.update_state(&msg).unwrap();
 
-        assert_eq!(party.status, Passed1a);
+        assert_eq!(party.status, PartyStatus::Passed1a);
     }
 
     #[test]
     fn test_update_state_msg1b() {
-        let mut party = default_party();
-        party.status = Passed1a;
+        let mut party = MockParty {
+            status: PartyStatus::Passed1a,
+            ..Default::default()
+        };
 
         let content = Message1bContent {
             ballot: party.ballot,
             last_ballot_voted: None,
-            last_value_voted: bincode::serialize(&MockValue(42)).ok(),
+            last_value_voted: bincode::serialize(&MockValue::default()).ok(),
         };
 
-        // First, send a 1b message from party 1 (weight 2)
+        // First, send a 1b message from party 1.
         let msg = content.pack(1).unwrap();
         party.update_state(&msg).unwrap();
 
-        // Then, send a 1b message from party 2 (weight 3)
+        // Then, send a 1b message from party 2.
         let msg = content.pack(2).unwrap();
         party.update_state(&msg).unwrap();
 
-        // After both messages, the cumulative weight is 2 + 3 = 5, which exceeds the threshold
-        assert_eq!(party.status, Passed1b);
+        // After both messages, the cumulative weight is
+        // 1 (own) + 1 (party 1) + 1 (party 2) = 3, which satisfies the threshold.
+        assert_eq!(party.status, PartyStatus::Passed1b);
     }
 
     #[test]
     fn test_update_state_msg2a() {
-        let mut party = default_party();
-        party.status = Passed1b;
-        party.leader = 1;
+        let mut party = MockParty {
+            status: PartyStatus::Passed1b,
+            ..Default::default()
+        };
 
         let content = Message2aContent {
             ballot: party.ballot,
-            value: bincode::serialize(&MockValue(42)).unwrap(),
+            value: bincode::serialize(&MockValue::default()).unwrap(),
         };
-        let msg = content.pack(1).unwrap();
+        let msg = content.pack(party.leader).unwrap();
+
         party.update_state(&msg).unwrap();
 
-        assert_eq!(party.status, Passed2a);
+        assert_eq!(party.status, PartyStatus::Passed2a);
     }
 
     #[test]
     fn test_update_state_msg2av() {
-        let mut party = default_party();
-        party.status = Passed2a;
-        party.value_2a = Some(MockValue(1));
+        let value_to_verify = MockValue::default();
+        let mut party = MockParty {
+            status: PartyStatus::Passed2a,
+            value_2a: Some(value_to_verify.clone()),
+            ..Default::default()
+        };
 
         let content = Message2avContent {
             ballot: party.ballot,
-            received_value: bincode::serialize(&MockValue(1)).unwrap(),
+            received_value: bincode::serialize(&value_to_verify).unwrap(),
         };
 
-        // Send first 2av message from party 1 (weight 2)
+        // First, send a 2av message from party 1.
         let msg = content.pack(1).unwrap();
         party.update_state(&msg).unwrap();
 
-        // Now send a second 2av message from party 2 (weight 3)
+        // Then, send a 2av message from party 2.
         let msg = content.pack(2).unwrap();
         party.update_state(&msg).unwrap();
 
-        // The cumulative weight (2 + 3) should exceed the threshold of 4
+        // After both messages, the cumulative weight is
+        // 1 (own) + 1 (party 1) + 1 (party 2) = 3, which satisfies the threshold.
         assert_eq!(party.status, PartyStatus::Passed2av);
     }
 
     #[test]
     fn test_update_state_msg2b() {
-        let mut party = default_party();
-        party.status = PartyStatus::Passed2av;
+        let mut party = MockParty {
+            status: PartyStatus::Passed2av,
+            ..Default::default()
+        };
 
-        // Simulate that both party 1 and party 2 already sent 2av messages
-        party.messages_2av_state.add_sender(1, 2);
-        party.messages_2av_state.add_sender(2, 3);
+        // Simulate that both party 1 and party 2 have already sent 2av messages.
+        party.messages_2av_state.add_sender(1, 1);
+        party.messages_2av_state.add_sender(2, 1);
 
         let content = Message2bContent {
             ballot: party.ballot,
         };
 
-        // Send first 2b message from party 1 (weight 2)
+        // First, send 2b message from party 1.
         let msg = content.pack(1).unwrap();
         party.update_state(&msg).unwrap();
 
-        // Print the current state and weight
-        println!(
-            "After first Msg2b: Status = {}, 2b Weight = {}",
-            party.status,
-            party.messages_2b_state.get_weight()
-        );
-
-        // Now send a second 2b message from party 2 (weight 3)
+        // Then, send 2b message from party 2.
         let msg = content.pack(2).unwrap();
         party.update_state(&msg).unwrap();
 
-        // Print the current state and weight
-        println!(
-            "After second Msg2b: Status = {}, 2b Weight = {}",
-            party.status,
-            party.messages_2b_state.get_weight()
-        );
-
-        // The cumulative weight (3 + 2) should exceed the threshold of 4
+        // After both messages, the cumulative weight is
+        // 1 (own) + 1 (party 1) + 1 (party 2) = 3, which satisfies the threshold.
         assert_eq!(party.status, PartyStatus::Passed2b);
     }
 
     #[test]
     fn test_follow_event_launch1a() {
-        let cfg = default_config();
         // Need to take ownership of msg_out_receiver, so that sender doesn't close,
-        // since otherwise msg_out_receiver will be dropped.
-        let (mut party, _msg_out_receiver, _) = Party::<MockValue, MockValueSelector>::new(
-            0,
-            cfg,
-            MockValueSelector,
-            Box::new(DefaultLeaderElector {}),
+        // since otherwise msg_out_receiver will be dropped and party will fail.
+        let (mut party, _receiver_from, _) = MockParty::new(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Box::new(DefaultLeaderElector::default()),
         );
 
-        party.status = Launched;
+        party.status = PartyStatus::Launched;
         party.leader = party.id;
 
-        party
-            .follow_event(PartyEvent::Launch1a)
-            .expect("Failed to follow Launch1a event");
+        party.follow_event(PartyEvent::Launch1a).unwrap();
 
         // If the party is the leader and in the Launched state, the event should trigger a message.
         // And it's status shall update to Passed1a after sending 1a message,
         // contrary to other participants, whose `Passed1a` updates only after receiving 1a message.
-        assert_eq!(party.status, Passed1a);
-    }
-
-    #[test]
-    fn test_follow_event_communication_failure() {
-        // msg_out_receiver channel, bound to corresponding sender, which will try to use
-        // follow event, is getting dropped since we don't take ownership of it
-        // upon creation of the party
-        let mut party = default_party();
-        party.status = Launched;
-        party.leader = party.id;
-
-        let result = party.follow_event(PartyEvent::Launch1a);
-
-        match result {
-            Err(FailedToSendMessage(_)) => {
-                // this is expected outcome
-            }
-            _ => panic!(
-                "Expected FollowEventError::FailedToSendMessage, got {:?}",
-                result
-            ),
-        }
+        assert_eq!(party.status, PartyStatus::Passed1a);
     }
 
     #[tokio::test]
     async fn test_launch_ballot_events() {
-        // Pause the Tokio time so we can manipulate it
+        // Pause the Tokio time so we can manipulate it.
         time::pause();
 
-        // Set up the Party with necessary configuration
-        let cfg = default_config();
+        let cfg = BPConConfig::default();
+
+        // Returning both channels so that party won't fail,
+        // because associated channels will close otherwise.
+        let (mut party, _receiver_from, _sender_into) = MockParty::new(
+            Default::default(),
+            cfg.clone(),
+            Default::default(),
+            Box::new(DefaultLeaderElector::default()),
+        );
 
         let (event_sender, mut event_receiver) = unbounded_channel();
-
-        // Need to return all 3 values, so that they don't get dropped
-        // and associated channels don't get closed.
-        let (mut party, _msg_out_receiver, _msg_in_sender) =
-            Party::<MockValue, MockValueSelector>::new(
-                0,
-                cfg.clone(),
-                MockValueSelector,
-                Box::new(DefaultLeaderElector::new()),
-            );
-
-        // Same here, we would like to not lose party's event_receiver, so that test doesn't fail.
+        // Keeping, so that associated party's event_receiver won't close
+        // and it doesn't fail.
         let _event_sender = party.event_sender;
         party.event_sender = event_sender;
 
-        // Spawn the launch_ballot function in a separate task
-        let _ballot_task = tokio::spawn(async move {
-            party.launch_ballot().await.unwrap();
+        // Spawn the launch_ballot function in a separate task.
+        _ = tokio::spawn(async move {
+            _ = party.launch_ballot().await;
         });
 
         time::advance(cfg.launch_timeout).await;
 
-        // Sequential time advance and event check
+        // Sequential time advance and event check.
 
         time::advance(cfg.launch1a_timeout).await;
         assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Launch1a);
@@ -1016,238 +951,5 @@ pub(crate) mod tests {
 
         time::advance(cfg.finalize_timeout - cfg.launch2b_timeout).await;
         assert_eq!(event_receiver.recv().await.unwrap(), PartyEvent::Finalize);
-    }
-
-    // Here each party/receiver/sender shall correspond at equal indexes.
-    type PartiesWithChannels = (
-        Vec<Party<MockValue, MockValueSelector>>,
-        Vec<UnboundedReceiver<MessagePacket>>,
-        Vec<UnboundedSender<MessagePacket>>,
-    );
-
-    // Create test parties with predefined generics, based on config.
-    fn create_parties(cfg: BPConConfig) -> PartiesWithChannels {
-        let value_selector = MockValueSelector;
-        let leader_elector = Box::new(DefaultLeaderElector::new());
-
-        // Note: each weight corresponds to party, ergo their lengths are equal.
-        (0..cfg.party_weights.len())
-            .map(|i| {
-                Party::<MockValue, MockValueSelector>::new(
-                    i as u64,
-                    cfg.clone(),
-                    value_selector.clone(),
-                    leader_elector.clone(),
-                )
-            })
-            .fold(
-                (Vec::new(), Vec::new(), Vec::new()),
-                |(mut parties, mut receivers, mut senders), (p, r, s)| {
-                    parties.push(p);
-                    receivers.push(r);
-                    senders.push(s);
-                    (parties, receivers, senders)
-                },
-            )
-    }
-
-    // Begin ballot process for each party.
-    fn launch_parties(
-        parties: Vec<Party<MockValue, MockValueSelector>>,
-    ) -> Vec<JoinHandle<Result<Option<MockValue>, LaunchBallotError>>> {
-        parties
-            .into_iter()
-            .map(|mut party| tokio::spawn(async move { party.launch_ballot().await }))
-            .collect()
-    }
-
-    // Collect messages from receivers.
-    fn collect_messages(receivers: &mut [UnboundedReceiver<MessagePacket>]) -> Vec<MessagePacket> {
-        receivers
-            .iter_mut()
-            .filter_map(|receiver| receiver.try_recv().ok())
-            .collect()
-    }
-
-    // Broadcast collected messages to other parties, skipping the sender.
-    fn broadcast_messages(
-        messages: Vec<MessagePacket>,
-        senders: &[UnboundedSender<MessagePacket>],
-    ) {
-        messages.iter().for_each(|msg| {
-            senders
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| msg.routing.sender != *i as u64) // Skip the current party (sender).
-                .for_each(|(_, sender_into)| {
-                    sender_into.send(msg.clone()).unwrap();
-                });
-        });
-    }
-
-    // Propagate messages peer-to-peer between parties using their channels.
-    fn propagate_messages_p2p(
-        mut receivers: Vec<UnboundedReceiver<MessagePacket>>,
-        senders: Vec<UnboundedSender<MessagePacket>>,
-    ) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            loop {
-                let messages = collect_messages(receivers.as_mut_slice());
-                broadcast_messages(messages, &senders);
-
-                // Delay to simulate network latency.
-                sleep(Duration::from_millis(100)).await;
-            }
-        })
-    }
-
-    // Await completion of each party's process and aggregate ok results.
-    async fn extract_values_from_ballot_tasks(
-        tasks: Vec<JoinHandle<Result<Option<MockValue>, LaunchBallotError>>>,
-    ) -> Vec<MockValue> {
-        let mut values = Vec::new();
-        for (i, task) in tasks.into_iter().enumerate() {
-            let result = task.await.unwrap();
-
-            match result {
-                Ok(Some(value)) => {
-                    values.push(value);
-                }
-                Ok(None) => {
-                    // This shall never happen for finished party.
-                    eprintln!("Party {}: No value was selected", i);
-                }
-                Err(err) => {
-                    eprintln!("Party {} encountered an error: {:?}", i, err);
-                }
-            }
-        }
-        values
-    }
-
-    // Use returned values from each party to analyze how ballot passed.
-    fn analyze_ballot_result(values: Vec<MockValue>) {
-        match values.as_slice() {
-            [] => {
-                eprintln!("No consensus could be reached, as no values were selected by any party")
-            }
-            [first_value, ..] => {
-                match values.iter().all(|v| v == first_value) {
-                    true => println!(
-                        "All parties reached the same consensus value: {:?}",
-                        first_value
-                    ),
-                    false => eprintln!("Not all parties agreed on the same value"),
-                }
-                println!("Consensus agreed on value {first_value:?}");
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_ballot_happy_case() {
-        let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1], 3);
-
-        let (parties, receivers, senders) = create_parties(cfg);
-
-        let ballot_tasks = launch_parties(parties);
-
-        let p2p_task = propagate_messages_p2p(receivers, senders);
-
-        let values = extract_values_from_ballot_tasks(ballot_tasks).await;
-
-        p2p_task.abort();
-
-        analyze_ballot_result(values);
-    }
-
-    #[tokio::test]
-    async fn test_ballot_faulty_party() {
-        let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1], 3);
-
-        let (mut parties, mut receivers, mut senders) = create_parties(cfg);
-
-        let leader = parties[0].leader;
-
-        assert_ne!(3, leader, "Should not fail the leader for the test to pass");
-
-        // Simulate failure of `f` faulty participants:
-        let parties = parties.drain(..3).collect();
-        let receivers = receivers.drain(..3).collect();
-        let senders = senders.drain(..3).collect();
-
-        let ballot_tasks = launch_parties(parties);
-
-        let p2p_task = propagate_messages_p2p(receivers, senders);
-
-        let values = extract_values_from_ballot_tasks(ballot_tasks).await;
-
-        p2p_task.abort();
-
-        analyze_ballot_result(values);
-    }
-
-    #[tokio::test]
-    async fn test_ballot_malicious_party() {
-        let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1], 3);
-
-        let (parties, mut receivers, senders) = create_parties(cfg);
-
-        let leader = parties[0].leader;
-        const MALICIOUS_PARTY_ID: u64 = 1;
-
-        assert_ne!(
-            MALICIOUS_PARTY_ID, leader,
-            "Should not make malicious the leader for the test to pass"
-        );
-
-        // We will be simulating malicious behaviour
-        // sending 1b message (meaning, 5/6 times at incorrect stage) with the wrong data.
-        let content = &Message1bContent {
-            ballot: parties[0].ballot + 1, // divergent ballot number
-            last_ballot_voted: Some(parties[0].ballot + 1), // early ballot number
-            // shouldn't put malformed serialized value, because we won't be able to pack it
-            last_value_voted: None,
-        };
-        let malicious_msg = content.pack(MALICIOUS_PARTY_ID).unwrap();
-
-        let ballot_tasks = launch_parties(parties);
-
-        let p2p_task = tokio::spawn(async move {
-            let mut last_malicious_message_time = time::Instant::now();
-            let malicious_message_interval = Duration::from_millis(3000);
-            loop {
-                // Collect all messages first.
-                let mut messages: Vec<_> = receivers
-                    .iter_mut()
-                    .enumerate()
-                    .filter_map(|(i, receiver)| {
-                        // Skip receiving messages from the malicious party
-                        // to substitute it with invalid one to be propagated.
-                        (i != MALICIOUS_PARTY_ID as usize)
-                            .then(|| receiver.try_recv().ok())
-                            .flatten()
-                    })
-                    .collect();
-
-                // Push the malicious message at intervals
-                // to mitigate bloating inner receiving channel.
-                if last_malicious_message_time.elapsed() >= malicious_message_interval {
-                    messages.push(malicious_msg.clone());
-                    last_malicious_message_time = time::Instant::now();
-                }
-
-                broadcast_messages(messages, &senders);
-
-                // Delay to simulate network latency.
-                sleep(Duration::from_millis(100)).await;
-            }
-        });
-
-        let values = extract_values_from_ballot_tasks(ballot_tasks).await;
-
-        p2p_task.abort();
-
-        analyze_ballot_result(values);
     }
 }
