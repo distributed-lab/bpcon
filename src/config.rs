@@ -96,14 +96,14 @@ impl BPConConfig {
             party_weights,
             threshold,
             // TODO: deduce actually good defaults.
-            launch_timeout: Duration::from_secs(0),
-            launch1a_timeout: Duration::from_secs(5),
-            launch1b_timeout: Duration::from_secs(10),
-            launch2a_timeout: Duration::from_secs(15),
-            launch2av_timeout: Duration::from_secs(20),
-            launch2b_timeout: Duration::from_secs(25),
-            finalize_timeout: Duration::from_secs(30),
-            grace_period: Duration::from_secs(1),
+            launch_timeout: Duration::from_millis(0),
+            launch1a_timeout: Duration::from_millis(200),
+            launch1b_timeout: Duration::from_millis(400),
+            launch2a_timeout: Duration::from_millis(600),
+            launch2av_timeout: Duration::from_millis(800),
+            launch2b_timeout: Duration::from_millis(1000),
+            finalize_timeout: Duration::from_millis(1200),
+            grace_period: Duration::from_millis(0),
         }
     }
 }
