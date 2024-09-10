@@ -129,6 +129,27 @@ fn analyze_ballot(results: Vec<Result<MockValue, LaunchBallotError>>) {
     }
 }
 
+/// Run ballot on given parties, simulating faulty behavior for given `faulty_ids`.
+async fn run_ballot_faulty_party(
+    parties: PartiesWithChannels,
+    faulty_ids: Vec<usize>,
+) -> Vec<Result<MockValue, LaunchBallotError>> {
+    let (mut parties, mut receivers, mut senders) = parties;
+
+    // Simulate failure excluding faulty parties from all processes:
+    for id in faulty_ids {
+        parties.remove(id);
+        receivers.remove(id);
+        senders.remove(id);
+    }
+
+    let ballot_tasks = launch_parties(parties);
+    let p2p_task = propagate_p2p(receivers, senders);
+    let results = await_results(ballot_tasks).await;
+    p2p_task.abort();
+    results
+}
+
 #[tokio::test]
 async fn test_ballot_happy_case() {
     let (parties, receivers, senders) = create_parties(BPConConfig::default());
@@ -141,28 +162,35 @@ async fn test_ballot_happy_case() {
 }
 
 #[tokio::test]
-async fn test_ballot_faulty_party() {
-    let (mut parties, mut receivers, mut senders) = create_parties(BPConConfig::default());
-
+async fn test_ballot_faulty_party_common() {
+    let parties = create_parties(BPConConfig::default());
     let elector = DefaultLeaderElector::new();
-    let leader = elector.elect_leader(&parties[0]).unwrap();
-    const FAULTY_PARTY_ID: u64 = 3;
-    assert_ne!(
-        FAULTY_PARTY_ID, leader,
-        "Should not fail the leader for the test to pass"
-    );
-
-    // Simulate failure excluding party from all processes:
-    parties.remove(FAULTY_PARTY_ID as usize);
-    receivers.remove(FAULTY_PARTY_ID as usize);
-    senders.remove(FAULTY_PARTY_ID as usize);
-
-    let ballot_tasks = launch_parties(parties);
-    let p2p_task = propagate_p2p(receivers, senders);
-    let results = await_results(ballot_tasks).await;
-    p2p_task.abort();
+    let leader = elector.elect_leader(&parties.0[0]).unwrap();
+    let faulty_ids: Vec<usize> = vec![3];
+    for id in faulty_ids.iter() {
+        assert_ne!(
+            *id as u64, leader,
+            "Should not fail the leader for the test to pass"
+        );
+    }
+    let results = run_ballot_faulty_party(parties, faulty_ids).await;
 
     analyze_ballot(results);
+}
+
+#[tokio::test]
+async fn test_ballot_faulty_party_leader() {
+    let parties = create_parties(BPConConfig::default());
+    let elector = DefaultLeaderElector::new();
+    let leader = elector.elect_leader(&parties.0[0]).unwrap();
+    let faulty_ids = vec![leader as usize];
+
+    let results = run_ballot_faulty_party(parties, faulty_ids).await;
+
+    assert!(
+        results.into_iter().all(|res| res.is_err()),
+        "All parties should have failed having a faulty leader in the consensus."
+    );
 }
 
 #[tokio::test]
