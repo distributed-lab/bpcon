@@ -329,17 +329,26 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     sleep(self.cfg.grace_period).await;
                     if let Some(msg) = msg {
                         let meta = (msg.routing.msg_type, msg.routing.sender);
-                        if !self.rate_limiter.contains(&meta){
-                            debug!("Party {} received {} from party {}", self.id, meta.0, meta.1);
-                            if let Err(err) = self.update_state(&msg) {
-                                // Shouldn't fail the party, since invalid message
-                                // may be sent by anyone. Furthermore, since in consensus
-                                // we are relying on redundancy of parties, we actually may need
-                                // less messages than from every party to transit to next status.
-                                warn!("Failed to update state for party {} with {}, got error: {err}", self.id, meta.0)
-                            }
-                            self.rate_limiter.insert(meta);
+                        debug!("Party {} received {} from party {}", self.id, meta.0, meta.1);
+
+                        if self.id == meta.1{
+                            warn!("Received own message {}, intended to be broadcasted.", meta.0);
+                            continue
                         }
+                        if self.rate_limiter.contains(&meta){
+                            warn!("Party {} hit rate limit in party {} for message {}", meta.1, self.id, meta.0);
+                            continue
+                        }
+
+                        if let Err(err) = self.update_state(&msg) {
+                            // Shouldn't fail the party, since invalid message
+                            // may be sent by anyone. Furthermore, since in consensus
+                            // we are relying on redundancy of parties, we actually may need
+                            // less messages than from every party to transit to next status.
+                            warn!("Failed to update state for party {} with {}, got error: {err}", self.id, meta.0)
+                        }
+                        self.rate_limiter.insert(meta);
+
                     }else if self.msg_in_receiver.is_closed(){
                          self.status = PartyStatus::Failed;
                          return Err(MessageChannelClosed)
