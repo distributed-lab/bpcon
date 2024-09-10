@@ -327,7 +327,9 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         debug!("Party {} received {} from party {}", self.id, msg.routing.msg_type, msg.routing.sender);
                         if let Err(err) = self.update_state(&msg) {
                             // Shouldn't fail the party, since invalid message
-                            // may be sent by anyone.
+                            // may be sent by anyone. Furthermore, since in consensus
+                            // we are relying on redundancy of parties, we actually may need
+                            // less messages than from every party to transit to next status.
                             warn!("Failed to update state with {}, got error: {err}", msg.routing.msg_type)
                         }
                     }else if self.msg_in_receiver.is_closed(){
