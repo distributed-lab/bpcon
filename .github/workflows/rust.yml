@@ -133,4 +133,4 @@ jobs:
         continue-on-error: false
         with:
           command: clippy
-          args: --all-targets -- -D warnings
+          args: --all-targets --all-features -- -D warnings
