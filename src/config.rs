@@ -1,6 +1,7 @@
 //! Definitions central to BPCon configuration.
 
 use std::time::Duration;
+use tokio::time::Instant;
 
 /// Configuration structure for BPCon.
 ///
@@ -22,11 +23,11 @@ pub struct BPConConfig {
     /// The quorum is the minimum weight required to make decisions in the BPCon protocol.
     pub threshold: u128,
 
-    /// Timeout before the ballot is launched.
+    /// Absolute time, at which party begins to work.
     ///
     /// This timeout differs from `launch1a_timeout` as it applies to a distinct status
     /// and does not involve listening to external events and messages.
-    pub launch_timeout: Duration,
+    pub launch_at: Instant,
 
     /// Timeout before the 1a stage is launched.
     ///
@@ -96,7 +97,7 @@ impl BPConConfig {
             party_weights,
             threshold,
             // TODO: deduce actually good defaults.
-            launch_timeout: Duration::from_millis(0),
+            launch_at: Instant::now(),
             launch1a_timeout: Duration::from_millis(200),
             launch1b_timeout: Duration::from_millis(400),
             launch2a_timeout: Duration::from_millis(600),

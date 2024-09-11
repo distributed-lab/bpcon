@@ -25,7 +25,7 @@ use std::cmp::PartialEq;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tokio::time::sleep;
+use tokio::time::{sleep, sleep_until};
 
 /// Represents the status of a `Party` in the BPCon consensus protocol.
 ///
@@ -256,7 +256,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     pub async fn launch_ballot(&mut self) -> Result<V, LaunchBallotError> {
         self.prepare_next_ballot()?;
 
-        sleep(self.cfg.launch_timeout).await;
+        sleep_until(self.cfg.launch_at).await;
 
         let launch1a_timer = sleep(self.cfg.launch1a_timeout);
         let launch1b_timer = sleep(self.cfg.launch1b_timeout);
@@ -938,8 +938,6 @@ mod tests {
         _ = tokio::spawn(async move {
             _ = party.launch_ballot().await;
         });
-
-        time::advance(cfg.launch_timeout).await;
 
         // Sequential time advance and event check.
 

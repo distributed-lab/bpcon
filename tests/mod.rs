@@ -267,7 +267,7 @@ async fn test_ballot_many_parties() {
     let cfg = BPConConfig {
         party_weights,
         threshold,
-        launch_timeout: Duration::from_secs(0),
+        launch_at: Instant::now(),
         launch1a_timeout: Duration::from_secs(0), // 1a's and 2a's are sent only by leader
         launch1b_timeout: Duration::from_secs(1), // meaning we need to wait less.
         launch2a_timeout: Duration::from_secs(5),
