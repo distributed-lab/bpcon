@@ -137,6 +137,6 @@ impl BPConConfig {
     /// In the example above, the total weight is 150, and the BFT threshold is calculated as `2/3 * 150 = 100`.
     pub fn compute_bft_threshold(party_weights: Vec<u64>) -> u128 {
         let total_weight: u128 = party_weights.iter().map(|&w| w as u128).sum();
-        (2 * total_weight) / 3
+        (2 * total_weight + 2) / 3 // adding 2 to keep division ceiling.
     }
 }
