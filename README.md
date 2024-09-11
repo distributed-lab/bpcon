@@ -25,7 +25,7 @@ bpcon = {version = "0.1.0", git = "https://github.com/distributed-lab/bpcon"}
 This is a core trait, which defines what type are you selecting in your consensus.
 It may be the next block in blockchain, or leader for some operation, or anything else you need.
 
-Below is a simple example, where we will operate on selection for `u64` type. 
+Below is a simple example, where we will operate on selection for `u64` type.
 Using it you may interpret `ID` for leader of distributed operation, for instance.
 
 ```rust
@@ -40,7 +40,7 @@ impl Value for MyValue {}
 
 ### Implement [ValueSelector](https://distributed-lab.github.io/bpcon/bpcon/value/trait.ValueSelector.html) trait
 
-`BPCon` allows you to define specific conditions how proposer (leader) will select value 
+`BPCon` allows you to define specific conditions how proposer (leader) will select value
 and how other members will verify its selection.
 
 Here is a simple example:
@@ -91,11 +91,11 @@ impl ValueSelector<MyValue> for MyValueSelector {
 
 `LeaderElector` trait allows you to define specific conditions, how to select leader for consensus.
 
-__NOTE: it is important to provide deterministic mechanism, 
-because each participant will compute leader for itself 
+__NOTE: it is important to provide deterministic mechanism,
+because each participant will compute leader for itself,
 and in case it is not deterministic, state divergence occurs.__
 
-We also provide ready-to-use 
+We also provide ready-to-use
 [DefaultLeaderElector](https://distributed-lab.github.io/bpcon/bpcon/leader/struct.DefaultLeaderElector.html)
 which is using weighted randomization.
 
@@ -115,21 +115,53 @@ use bpcon::config::BPConConfig;
 let cfg = BPConConfig::with_default_timeouts(vec![1, 1, 1, 1, 1, 1], 4);
 ```
 
-Feel free to explore [config.rs](https://distributed-lab.github.io/bpcon/bpcon/config/struct.BPConConfig.html) 
+Feel free to explore [config.rs](https://distributed-lab.github.io/bpcon/bpcon/config/struct.BPConConfig.html)
 for more information.
 
 ### Create parties
 
-Having `BPConConfig`, `ValueSelector` and `LeaderElector` defined, instantiate your parties. 
+Having `BPConConfig`, `ValueSelector` and `LeaderElector` defined, instantiate your parties.
 Check out [new](https://distributed-lab.github.io/bpcon/bpcon/party/struct.Party.html#method.new)
 method on a `Party` struct.
 
 ### Launch ballot on parties and handle messages
 
-Each party interfaces communication with external system via channels. 
+Each party interfaces communication with external system via channels.
 In a way, you shall propagate outgoing messages to other parties like:
 
 1. Listen for outgoing message using `msg_out_receiver`.
 2. Forward it to other parties using `msg_in_sender`.
 
 We welcome you to check our [integration tests](./tests) for examples.
+
+## Security Considerations 🔐
+
+### Categories of parties
+
+In real world applications, we may categorize parties by their behavior to following:
+
+1. Good - party sends messages to other participants based on following events,
+    and correctly receives and processes messages from other parties.
+
+2. Faulty - party has troubles receiving/sending messages.
+    These are simply mitigated by the weighed threshold and redundancy of consensus participants.
+
+3. Malicious - party launches DDoS attack using unbounded sending of messages -
+    to deal with this, we introduce rate-limiting mechanism in accepting messages inside the `Party`,
+    however it is also ❗️ required by integrating 'external' system ❗️, which handles `P2P`, to attest to this, because otherwise receiving channel may get flooded by malicious messages and block messages from other parties.
+    Another way to cause trouble is by sending invalid messages. For this, each party has
+    a set of checks for certain fields like current ballot number, status, etc.
+    Additionally, if the state transition caused by incoming message errored, it does not impact the party in either way.
+
+### Note on the leader 👑
+
+If the `leader` of the ballot is faulty or malicious, the ballot deterministically fails and needs to be relaunched.
+
+### Note on the communication discrepancies 🔇
+
+Each party has a certain period in which it may accept particular messages for a certain stage
+(example: having passed 1a stage, it is open for accepting only 1b messages for 2 seconds).
+These periods are configurable using `BPConConfig`, meaning you can program certain ranges
+to allow slow parties to catch up, while others are waiting, before transiting to the next stage.
+
+In addition it is possible to schedule parties to launch at specific absolute time.
