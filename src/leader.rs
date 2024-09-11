@@ -155,42 +155,50 @@ impl<V: Value, VS: ValueSelector<V>> LeaderElector<V, VS> for DefaultLeaderElect
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::party::tests::{default_config, default_party};
+    use crate::config::BPConConfig;
+    use crate::test_mocks::MockParty;
     use rand::Rng;
     use std::thread;
     use std::time::Duration;
 
     #[test]
     fn test_default_leader_elector_determinism() {
-        let party = default_party();
+        let party = MockParty::default();
         let elector = DefaultLeaderElector::new();
 
-        let leader1 = elector.elect_leader(&party).unwrap();
+        const ITERATIONS: usize = 10;
 
-        // Test multiple iterations to ensure the leader remains the same
-        for i in 2..=10 {
-            let leader = elector.elect_leader(&party).unwrap();
-            assert_eq!(
-                leader1, leader,
-                "Leaders should be consistent on repeated calls (iteration {})",
-                i
-            );
+        // Collect multiple leaders
+        let leaders: Vec<_> = (0..ITERATIONS)
+            .map(|_| elector.elect_leader(&party).unwrap())
+            .collect();
+
+        // Match the first leader and ensure all others are the same
+        match &leaders[..] {
+            [first_leader, rest @ ..] => {
+                assert!(
+                    rest.iter().all(|leader| leader == first_leader),
+                    "All leaders should be the same across multiple iterations."
+                );
+            }
+            _ => panic!("No leaders were collected!"),
         }
     }
 
     #[test]
     fn test_default_leader_elector_fail_with_zero_weights() {
-        let mut party = default_party();
-        let mut cfg = default_config();
-        cfg.party_weights = vec![0, 0, 0];
+        let mut party = MockParty::default();
+        let cfg = BPConConfig {
+            party_weights: vec![0, 0, 0],
+            ..Default::default()
+        };
         party.cfg = cfg;
-
         let elector = DefaultLeaderElector::new();
 
-        match elector.elect_leader(&party) {
-            Err(_) => {} // This is the expected behavior
-            _ => panic!("Expected DefaultLeaderElectorError::ZeroWeightSum"),
-        }
+        assert!(
+            elector.elect_leader(&party).is_err(),
+            "Expected DefaultLeaderElectorError::ZeroWeightSum"
+        );
     }
 
     fn debug_hash_to_range_new(seed: u64, range: u64) -> u64 {
@@ -218,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Ignoring since it takes a while to run
+    #[ignore = "takes too long to run, launch manually"]
     fn test_hash_range_random() {
         // Test the uniform distribution
 

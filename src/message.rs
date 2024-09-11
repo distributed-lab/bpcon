@@ -30,7 +30,7 @@ pub struct MessageRouting {
 ///
 /// These message types represent the various stages of the BPCon consensus protocol,
 /// each corresponding to a specific phase in the process.
-#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone, Hash)]
 pub enum ProtocolMessage {
     Msg1a,
     Msg1b,

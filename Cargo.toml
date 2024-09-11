@@ -5,7 +5,7 @@ edition = "2021"
 description = "BPCon: A Byzantine Fault-Tolerant Consensus Protocol Implementation in Rust."
 license = "MIT"
 repository = "https://github.com/distributed-lab/bpcon"
-homepage = "https://github.com/distributed-lab/bpcon"
+homepage = "https://github.com/distributed-lab/bpcon#readme"
 documentation = "https://distributed-lab.github.io/bpcon/"
 keywords = ["consensus", "byzantine", "protocol", "distributed-systems", "blockchain"]
 categories = ["algorithms"]
@@ -23,8 +23,13 @@ seeded-random = "^0.6.0"
 thiserror = "^1.0.63"
 
 [features]
-default = ["full"]
-full = ["tokio/full", "rkyv/validation"]
+default = ["tokio/full", "rkyv/validation"]
+test-mocks = []
 
 [dev-dependencies]
 tokio = { version = "^1.39.2", features = ["test-util"] }
+futures = "0.3.30"
+
+[[test]]
+name = "mod"
+required-features = ["test-mocks"]

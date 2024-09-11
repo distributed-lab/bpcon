@@ -1,6 +1,7 @@
 //! Definitions central to BPCon configuration.
 
 use std::time::Duration;
+use tokio::time::Instant;
 
 /// Configuration structure for BPCon.
 ///
@@ -18,15 +19,15 @@ pub struct BPConConfig {
 
     /// Threshold weight to define BFT quorum.
     ///
-    /// This value must be greater than 2/3 of the total weight of all parties combined.
+    /// This value must be greater than or equal to 2/3 of the total weight of all parties combined.
     /// The quorum is the minimum weight required to make decisions in the BPCon protocol.
     pub threshold: u128,
 
-    /// Timeout before the ballot is launched.
+    /// Absolute time, at which party begins to work.
     ///
     /// This timeout differs from `launch1a_timeout` as it applies to a distinct status
     /// and does not involve listening to external events and messages.
-    pub launch_timeout: Duration,
+    pub launch_at: Instant,
 
     /// Timeout before the 1a stage is launched.
     ///
@@ -96,14 +97,47 @@ impl BPConConfig {
             party_weights,
             threshold,
             // TODO: deduce actually good defaults.
-            launch_timeout: Duration::from_secs(0),
-            launch1a_timeout: Duration::from_secs(5),
-            launch1b_timeout: Duration::from_secs(10),
-            launch2a_timeout: Duration::from_secs(15),
-            launch2av_timeout: Duration::from_secs(20),
-            launch2b_timeout: Duration::from_secs(25),
-            finalize_timeout: Duration::from_secs(30),
-            grace_period: Duration::from_secs(1),
+            launch_at: Instant::now(),
+            launch1a_timeout: Duration::from_millis(200),
+            launch1b_timeout: Duration::from_millis(400),
+            launch2a_timeout: Duration::from_millis(600),
+            launch2av_timeout: Duration::from_millis(800),
+            launch2b_timeout: Duration::from_millis(1000),
+            finalize_timeout: Duration::from_millis(1200),
+            grace_period: Duration::from_millis(0),
         }
+    }
+
+    /// Compute the Byzantine Fault Tolerance (BFT) threshold for the consensus protocol.
+    ///
+    /// This function calculates the minimum weight required to achieve a BFT quorum.
+    /// In BFT systems, consensus is typically reached when more than two-thirds
+    /// of the total weight is gathered from non-faulty parties.
+    ///
+    /// # Parameters
+    ///
+    /// - `party_weights`: A vector of weights corresponding to each party involved in the consensus.
+    ///   These weights represent the voting power or influence of each party in the protocol.
+    ///
+    /// # Returns
+    ///
+    /// The BFT threshold as a `u128` value, which represents the minimum total weight
+    /// required to achieve consensus in a Byzantine Fault Tolerant system. This is calculated
+    /// as two-thirds of the total party weights.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bpcon::config::BPConConfig;
+    ///
+    /// let party_weights = vec![10, 20, 30, 40, 50];
+    /// let threshold = BPConConfig::compute_bft_threshold(party_weights);
+    /// assert_eq!(threshold, 100);
+    /// ```
+    ///
+    /// In the example above, the total weight is 150, and the BFT threshold is calculated as `2/3 * 150 = 100`.
+    pub fn compute_bft_threshold(party_weights: Vec<u64>) -> u128 {
+        let total_weight: u128 = party_weights.iter().map(|&w| w as u128).sum();
+        (2 * total_weight + 2) / 3 // adding 2 to keep division ceiling.
     }
 }
