@@ -106,4 +106,37 @@ impl BPConConfig {
             grace_period: Duration::from_millis(0),
         }
     }
+
+    /// Compute the Byzantine Fault Tolerance (BFT) threshold for the consensus protocol.
+    ///
+    /// This function calculates the minimum weight required to achieve a BFT quorum.
+    /// In BFT systems, consensus is typically reached when more than two-thirds
+    /// of the total weight is gathered from non-faulty parties.
+    ///
+    /// # Parameters
+    ///
+    /// - `party_weights`: A vector of weights corresponding to each party involved in the consensus.
+    ///   These weights represent the voting power or influence of each party in the protocol.
+    ///
+    /// # Returns
+    ///
+    /// The BFT threshold as a `u128` value, which represents the minimum total weight
+    /// required to achieve consensus in a Byzantine Fault Tolerant system. This is calculated
+    /// as two-thirds of the total party weights.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use bpcon::config::BPConConfig;
+    ///
+    /// let party_weights = vec![10, 20, 30, 40, 50];
+    /// let threshold = BPConConfig::compute_bft_threshold(party_weights);
+    /// assert_eq!(threshold, 100);
+    /// ```
+    ///
+    /// In the example above, the total weight is 150, and the BFT threshold is calculated as `2/3 * 150 = 100`.
+    pub fn compute_bft_threshold(party_weights: Vec<u64>) -> u128 {
+        let total_weight: u128 = party_weights.iter().map(|&w| w as u128).sum();
+        (2 * total_weight) / 3
+    }
 }

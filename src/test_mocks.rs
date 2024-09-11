@@ -31,7 +31,9 @@ impl ValueSelector<MockValue> for MockValueSelector {
 
 impl Default for BPConConfig {
     fn default() -> Self {
-        BPConConfig::with_default_timeouts(vec![1, 1, 1, 1], 3)
+        let weights = vec![1, 1, 1, 1];
+        let threshold = BPConConfig::compute_bft_threshold(weights.clone());
+        BPConConfig::with_default_timeouts(weights, threshold)
     }
 }
 

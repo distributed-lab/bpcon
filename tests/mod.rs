@@ -11,19 +11,6 @@ use tokio::time::{sleep, Duration, Instant};
 
 use futures::future::join_all;
 
-/// Returns config with fast timeouts.
-fn get_fast_config() -> BPConConfig {
-    BPConConfig{
-        launch1a_timeout: Duration::from_millis(0),
-        launch1b_timeout: Duration::from_millis(50),
-        launch2a_timeout: Duration::from_millis(100),
-        launch2av_timeout: Duration::from_millis(150),
-        launch2b_timeout: Duration::from_millis(200),
-        finalize_timeout: Duration::from_millis(250),
-        ..Default::default()
-    }
-}
-
 /// Here each party/receiver/sender shall correspond at equal indexes.
 type PartiesWithChannels = (
     Vec<MockParty>,
@@ -165,7 +152,7 @@ async fn run_ballot_faulty_party(
 
 #[tokio::test]
 async fn test_ballot_happy_case() {
-    let (parties, receivers, senders) = create_parties(get_fast_config());
+    let (parties, receivers, senders) = create_parties(BPConConfig::default());
     let ballot_tasks = launch_parties(parties);
     let p2p_task = propagate_p2p(receivers, senders);
     let results = await_results(ballot_tasks).await;
@@ -176,7 +163,7 @@ async fn test_ballot_happy_case() {
 
 #[tokio::test]
 async fn test_ballot_faulty_party_common() {
-    let parties = create_parties(get_fast_config());
+    let parties = create_parties(BPConConfig::default());
     let elector = DefaultLeaderElector::new();
     let leader = elector.elect_leader(&parties.0[0]).unwrap();
     let faulty_ids: Vec<usize> = vec![3];
@@ -193,7 +180,7 @@ async fn test_ballot_faulty_party_common() {
 
 #[tokio::test]
 async fn test_ballot_faulty_party_leader() {
-    let parties = create_parties(get_fast_config());
+    let parties = create_parties(BPConConfig::default());
     let elector = DefaultLeaderElector::new();
     let leader = elector.elect_leader(&parties.0[0]).unwrap();
     let faulty_ids = vec![leader as usize];
@@ -264,6 +251,35 @@ async fn test_ballot_malicious_party() {
         }
     });
 
+    let results = await_results(ballot_tasks).await;
+    p2p_task.abort();
+
+    analyze_ballot(results);
+}
+
+#[tokio::test]
+#[ignore = "takes 20 secs to run, launch manually"]
+async fn test_ballot_many_parties() {
+    const AMOUNT_OF_PARTIES: usize = 999;
+    let party_weights = vec![1; AMOUNT_OF_PARTIES];
+    let threshold = BPConConfig::compute_bft_threshold(party_weights.clone());
+
+    let cfg = BPConConfig {
+        party_weights,
+        threshold,
+        launch_timeout: Duration::from_secs(0),
+        launch1a_timeout: Duration::from_secs(0), // 1a's and 2a's are sent only by leader
+        launch1b_timeout: Duration::from_secs(1), // meaning we need to wait less.
+        launch2a_timeout: Duration::from_secs(5),
+        launch2av_timeout: Duration::from_secs(7),
+        launch2b_timeout: Duration::from_secs(12),
+        finalize_timeout: Duration::from_secs(19),
+        grace_period: Duration::from_secs(0),
+    };
+
+    let (parties, receivers, senders) = create_parties(cfg);
+    let ballot_tasks = launch_parties(parties);
+    let p2p_task = propagate_p2p(receivers, senders);
     let results = await_results(ballot_tasks).await;
     p2p_task.abort();
 
