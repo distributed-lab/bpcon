@@ -53,9 +53,11 @@ jobs:
   test:
     name: Test Suite
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable, beta, nightly]
+        retries: [1, 2, 3]  # We have non-deterministic tests, which depend on computational power.
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout sources
