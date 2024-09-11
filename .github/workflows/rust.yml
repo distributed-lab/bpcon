@@ -13,6 +13,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   check:
     name: Check
@@ -53,11 +56,9 @@ jobs:
   test:
     name: Test Suite
     strategy:
-      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable, beta, nightly]
-        retries: [1, 2, 3]  # We have non-deterministic tests, which depend on computational power.
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout sources
@@ -85,12 +86,14 @@ jobs:
           profile: minimal
           toolchain: ${{ matrix.rust }}
 
-      - name: Run cargo test
-        uses: actions-rs/cargo@v1
-        continue-on-error: false
+      - name: Install Nextest
+        uses: taiki-e/install-action@v2
         with:
-          command: test
-          args: --all-features --verbose
+          tool: nextest
+
+      - name: Run Nextest
+        # We have non-deterministic integration tests, thus adding retries.
+        run: cargo nextest run --all-features --retries 3
 
   lints:
     name: Lints
