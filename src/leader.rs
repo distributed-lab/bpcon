@@ -70,7 +70,7 @@ impl DefaultLeaderElector {
 
     /// Hashes the seed to a value within a specified range.
     ///
-    /// This method uses the computed seed to generate a value within the range [0, range).
+    /// This method uses the computed seed to generate a value within the range [0, range].
     /// The algorithm ensures uniform distribution of the resulting value, which is crucial
     /// for fair leader election.
     ///
@@ -83,7 +83,7 @@ impl DefaultLeaderElector {
     fn hash_to_range(seed: u64, range: u64) -> u64 {
         // Determine the number of bits required to represent the range
         let mut k = 64;
-        while 1u64 << (k - 1) >= range {
+        while 1u64 << (k - 1) > range {
             k -= 1;
         }
 
@@ -129,7 +129,7 @@ impl<V: Value, VS: ValueSelector<V>> LeaderElector<V, VS> for DefaultLeaderElect
             return Err(DefaultLeaderElectorError::ZeroWeightSum.into());
         }
 
-        // Generate a random number in the range [0, total_weight)
+        // Generate a random number in the range [0, total_weight]
         let random_value = DefaultLeaderElector::hash_to_range(seed, total_weight);
 
         // Use binary search to find the corresponding participant based on the cumulative weight
@@ -160,6 +160,17 @@ mod tests {
     use rand::Rng;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn test_default_leader_elector_weight_one() {
+        let mut party = MockParty::default();
+        party.cfg.party_weights = vec![0, 1, 0, 0];
+
+        let elector = DefaultLeaderElector::new();
+
+        let leader = elector.elect_leader(&party).unwrap();
+        println!("leader: {}", leader);
+    }
 
     #[test]
     fn test_default_leader_elector_determinism() {
