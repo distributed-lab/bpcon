@@ -91,9 +91,9 @@ impl ValueSelector<MyValue> for MyValueSelector {
 
 `LeaderElector` trait allows you to define specific conditions, how to select leader for consensus.
 
-__NOTE: it is important to provide deterministic mechanism,
+**NOTE: it is important to provide deterministic mechanism,
 because each participant will compute leader for itself,
-and in case it is not deterministic, state divergence occurs.__
+and in case it is not deterministic, state divergence occurs.**
 
 We also provide ready-to-use
 [DefaultLeaderElector](https://distributed-lab.github.io/bpcon/bpcon/leader/struct.DefaultLeaderElector.html)
@@ -141,17 +141,17 @@ We welcome you to check our [integration tests](./tests) for examples.
 In real world applications, we may categorize parties by their behavior to following:
 
 1. Good - party sends messages to other participants based on following events,
-    and correctly receives and processes messages from other parties.
+   and correctly receives and processes messages from other parties.
 
 2. Faulty - party has troubles receiving/sending messages.
-    These are simply mitigated by the weighed threshold and redundancy of consensus participants.
+   These are simply mitigated by the weighed threshold and redundancy of consensus participants.
 
 3. Malicious - party launches DDoS attack using unbounded sending of messages -
-    to deal with this, we introduce rate-limiting mechanism in accepting messages inside the `Party`,
-    however it is also ❗️ required by integrating 'external' system ❗️, which handles `P2P`, to attest to this, because otherwise receiving channel may get flooded by malicious messages and block messages from other parties.
-    Another way to cause trouble is by sending invalid messages. For this, each party has
-    a set of checks for certain fields like current ballot number, status, etc.
-    Additionally, if the state transition caused by incoming message errored, it does not impact the party in either way.
+   to deal with this, we introduce rate-limiting mechanism in accepting messages inside the `Party`,
+   however it is also ❗️ required by integrating 'external' system ❗️, which handles `P2P`, to attest to this, because otherwise receiving channel may get flooded by malicious messages and block messages from other parties.
+   Another way to cause trouble is by sending invalid messages. For this, each party has
+   a set of checks for certain fields like current ballot number, status, etc.
+   Additionally, if the state transition caused by incoming message errored, it does not impact the party in either way.
 
 ### Note on the leader 👑
 
