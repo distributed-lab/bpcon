@@ -5,7 +5,8 @@
 
 use crate::party::Party;
 use crate::value::{Value, ValueSelector};
-use seeded_random::{Random, Seed};
+use rand_chacha::rand_core::{RngCore, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use thiserror::Error;
 
@@ -87,9 +88,9 @@ impl DefaultLeaderElector {
         }
 
         // Use a seeded random generator to produce a value within the desired range
-        let rng = Random::from_seed(Seed::unsafe_new(seed));
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
         loop {
-            let mut raw_res: u128 = rng.gen::<u128>(); // Generate a u128 random value
+            let mut raw_res = ((rng.next_u64() as u128) << 64) | (rng.next_u64() as u128);
             raw_res >>= 128 - k;
 
             if raw_res < range {
@@ -211,11 +212,11 @@ mod tests {
             k -= 1;
         }
 
-        let rng = Random::from_seed(Seed::unsafe_new(seed));
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
 
         let mut iteration = 1u64;
         loop {
-            let mut raw_res: u64 = rng.gen();
+            let mut raw_res: u64 = rng.next_u64();
             raw_res >>= 64 - k;
 
             if raw_res < range {
@@ -262,15 +263,15 @@ mod tests {
 
     #[test]
     fn test_rng() {
-        let rng1 = Random::from_seed(Seed::unsafe_new(123456));
-        let rng2 = Random::from_seed(Seed::unsafe_new(123456));
+        let mut rng1 = ChaCha20Rng::seed_from_u64(123456);
+        let mut rng2 = ChaCha20Rng::seed_from_u64(123456);
 
-        println!("{}", rng1.gen::<u64>());
-        println!("{}", rng2.gen::<u64>());
+        println!("{}", rng1.next_u64());
+        println!("{}", rng2.next_u64());
 
         thread::sleep(Duration::from_secs(2));
 
-        println!("{}", rng1.gen::<u64>());
-        println!("{}", rng2.gen::<u64>());
+        println!("{}", rng1.next_u64());
+        println!("{}", rng2.next_u64());
     }
 }
