@@ -495,7 +495,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                         self.cfg.party_weights[routing.sender as usize] as u128;
 
                     let self_weight = self.cfg.party_weights[self.id as usize] as u128;
-                    if self.messages_1b_weight >= self.cfg.threshold - self_weight {
+                    if self.messages_1b_weight >= self.cfg.threshold.saturating_sub(self_weight) {
                         self.status = PartyStatus::Passed1b;
                     }
                 }
@@ -576,7 +576,9 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     );
 
                     let self_weight = self.cfg.party_weights[self.id as usize] as u128;
-                    if self.messages_2av_state.get_weight() >= self.cfg.threshold - self_weight {
+                    if self.messages_2av_state.get_weight()
+                        >= self.cfg.threshold.saturating_sub(self_weight)
+                    {
                         self.status = PartyStatus::Passed2av;
                     }
                 }
@@ -609,7 +611,9 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
                     );
 
                     let self_weight = self.cfg.party_weights[self.id as usize] as u128;
-                    if self.messages_2b_state.get_weight() >= self.cfg.threshold - self_weight {
+                    if self.messages_2b_state.get_weight()
+                        >= self.cfg.threshold.saturating_sub(self_weight)
+                    {
                         self.status = PartyStatus::Passed2b;
                     }
                 }

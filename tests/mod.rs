@@ -199,7 +199,7 @@ async fn test_ballot_malicious_party() {
 
     let elector = DefaultLeaderElector::new();
     let leader = elector.elect_leader(&parties[0]).unwrap();
-    const MALICIOUS_PARTY_ID: u64 = 1;
+    const MALICIOUS_PARTY_ID: u64 = 2;
 
     assert_ne!(
         MALICIOUS_PARTY_ID, leader,
@@ -276,6 +276,36 @@ async fn test_ballot_many_parties() {
         finalize_timeout: Duration::from_secs(19),
         grace_period: Duration::from_secs(0),
     };
+
+    let (parties, receivers, senders) = create_parties(cfg);
+    let ballot_tasks = launch_parties(parties);
+    let p2p_task = propagate_p2p(receivers, senders);
+    let results = await_results(ballot_tasks).await;
+    p2p_task.abort();
+
+    analyze_ballot(results);
+}
+
+#[tokio::test]
+async fn test_ballot_max_weight() {
+    let weights = vec![u64::MAX, 1];
+    let threshold = BPConConfig::compute_bft_threshold(weights.clone());
+    let cfg = BPConConfig::with_default_timeouts(weights, threshold);
+
+    let (parties, receivers, senders) = create_parties(cfg);
+    let ballot_tasks = launch_parties(parties);
+    let p2p_task = propagate_p2p(receivers, senders);
+    let results = await_results(ballot_tasks).await;
+    p2p_task.abort();
+
+    analyze_ballot(results);
+}
+
+#[tokio::test]
+async fn test_ballot_weights_underflow() {
+    let weights = vec![100, 1, 2, 3, 4];
+    let threshold = BPConConfig::compute_bft_threshold(weights.clone());
+    let cfg = BPConConfig::with_default_timeouts(weights, threshold);
 
     let (parties, receivers, senders) = create_parties(cfg);
     let ballot_tasks = launch_parties(parties);
