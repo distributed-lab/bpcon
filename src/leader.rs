@@ -6,7 +6,6 @@
 use crate::party::Party;
 use crate::value::{Value, ValueSelector};
 use seeded_random::{Random, Seed};
-use std::cmp::Ordering;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use thiserror::Error;
 
@@ -132,23 +131,15 @@ impl<V: Value, VS: ValueSelector<V>> LeaderElector<V, VS> for DefaultLeaderElect
         // Generate a random number in the range [0, total_weight]
         let random_value = DefaultLeaderElector::hash_to_range(seed, total_weight);
 
-        // Use binary search to find the corresponding participant based on the cumulative weight
-        let mut cumulative_weights = vec![0u128; party.cfg.party_weights.len()];
-        cumulative_weights[0] = party.cfg.party_weights[0] as u128;
-
-        for i in 1..party.cfg.party_weights.len() {
-            cumulative_weights[i] = cumulative_weights[i - 1] + party.cfg.party_weights[i] as u128;
-        }
-
-        match cumulative_weights.binary_search_by(|&weight| {
-            if random_value < weight {
-                Ordering::Greater
-            } else {
-                Ordering::Less
+        let mut cumulative_sum = 0u128;
+        for (index, &weight) in party.cfg.party_weights.iter().enumerate() {
+            cumulative_sum += weight as u128;
+            if random_value <= cumulative_sum {
+                return Ok(index as u64);
             }
-        }) {
-            Ok(index) | Err(index) => Ok(index as u64),
         }
+
+        unreachable!("Index is guaranteed to be returned in a loop.")
     }
 }
 
