@@ -199,7 +199,7 @@ async fn test_ballot_malicious_party() {
 
     let elector = DefaultLeaderElector::new();
     let leader = elector.elect_leader(&parties[0]).unwrap();
-    const MALICIOUS_PARTY_ID: u64 = 1;
+    const MALICIOUS_PARTY_ID: u64 = 2;
 
     assert_ne!(
         MALICIOUS_PARTY_ID, leader,
