@@ -13,6 +13,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   check:
     name: Check
@@ -83,12 +86,14 @@ jobs:
           profile: minimal
           toolchain: ${{ matrix.rust }}
 
-      - name: Run cargo test
-        uses: actions-rs/cargo@v1
-        continue-on-error: false
+      - name: Install Nextest
+        uses: taiki-e/install-action@v2
         with:
-          command: test
-          args: --all-features --verbose
+          tool: nextest
+
+      - name: Run Nextest
+        # We have non-deterministic integration tests, thus adding retries.
+        run: cargo nextest run --all-features --retries 3
 
   lints:
     name: Lints
@@ -133,4 +138,4 @@ jobs:
         continue-on-error: false
         with:
           command: clippy
-          args: --all-targets -- -D warnings
+          args: --all-targets --all-features -- -D warnings
