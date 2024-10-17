@@ -207,7 +207,7 @@ impl<V: Value, VS: ValueSelector<V>> Party<V, VS> {
     /// # Returns
     /// - `true` if the ballot is currently active; `false` otherwise.
     pub fn is_launched(&self) -> bool {
-        !self.is_stopped()
+        !(self.is_stopped() || self.status == PartyStatus::None)
     }
 
     /// Checks if the ballot process has been stopped.
