@@ -1,0 +1,25 @@
+{
+  "name": "bpcon",
+  "description": "Generic Rust library for BPCon (Byzantine Paxos).",
+  "scripts": {
+    "prettier:fix": "prettier --cache --write .",
+    "prettier:check": "prettier --cache --check ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/distributed-lab/bpcon"
+  },
+  "keywords": [
+    "Rust",
+    "BPCon",
+    "DistributedLab"
+  ],
+  "author": "DistributedLab",
+  "bugs": {
+    "url": "https://github.com/distributed-lab/bpcon/issues"
+  },
+  "homepage": "https://github.com/distributed-lab/bpcon#readme",
+  "devDependencies": {
+    "prettier": "^3.3.3"
+  }
+}
