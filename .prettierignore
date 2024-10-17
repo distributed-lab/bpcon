@@ -1,0 +1,6 @@
+# We use cargo fmt for rust-related files.
+src/
+tests/
+Cargo.toml
+Cargo.lock
+*.rs
