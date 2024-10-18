@@ -20,6 +20,13 @@
   },
   "homepage": "https://github.com/distributed-lab/bpcon#readme",
   "devDependencies": {
-    "prettier": "^3.3.3"
+    "prettier": "^3.3.3",
+    "semantic-release": "24.1.2",
+    "semantic-release-cargo": "2.3.5"
+  },
+  "release": {
+    "plugins": [
+      "semantic-release-cargo"
+    ]
   }
 }

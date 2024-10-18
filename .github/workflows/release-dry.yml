@@ -1,0 +1,30 @@
+name: Release Dry Run
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  semantic-release-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Semantic Release
+        uses: cycjimmy/semantic-release-action@v4
+        id: semantic
+        with:
+          semantic_version: ^24.1.1
+          extra_plugins: |
+            semantic-release-cargo@2.3.5
+          dry_run: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Output Deduced Info
+        run: |
+          echo "Is new release: ${{ steps.semantic.outputs.new_release_published }}"
+          echo "New release version: ${{ steps.semantic.outputs.new_release_version }}"
+          echo "New release git tag: ${{ steps.semantic.outputs.new_release_git_tag }}"
