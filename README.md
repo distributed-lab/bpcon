@@ -9,7 +9,8 @@
 ## Documentation
 
 Library is documented with `rustdoc`.
-Compiled documentation for `main` branch is available at [GitBook](https://distributed-lab.github.io/bpcon).
+Compiled production documentation for `main` branch is available at https://docs.rs/bpcon.
+For other branches, development documentation is published to [GitBook](https://distributed-lab.github.io/bpcon/).
 
 ## Usage
 
@@ -17,7 +18,7 @@ Compiled documentation for `main` branch is available at [GitBook](https://distr
 
 ```toml
 [dependencies]
-bpcon = {version = "0.1.0", git = "https://github.com/distributed-lab/bpcon"}
+bpcon = "0.1.0"
 ```
 
 ### Implement [Value](https://distributed-lab.github.io/bpcon/bpcon/value/trait.Value.html) trait
