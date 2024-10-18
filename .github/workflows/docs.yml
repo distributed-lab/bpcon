@@ -1,9 +1,11 @@
-name: Deploy Rust Docs to GitHub Pages
+name: Deploy Dev Rust Docs to GitHub Pages
 
 on:
   push:
-    branches:
-      - main
+    paths:
+      - "**/*.rs" # Any Rust source code files
+      - Cargo.toml # Cargo.toml file
+      - Cargo.lock # Cargo.lock file
 
 concurrency:
   group: "pages"
@@ -43,7 +45,7 @@ jobs:
       id-token: write
 
     environment:
-      name: docs
+      name: dev-docs
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
