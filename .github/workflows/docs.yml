@@ -6,6 +6,7 @@ on:
       - "**/*.rs" # Any Rust source code files
       - Cargo.toml # Cargo.toml file
       - Cargo.lock # Cargo.lock file
+  workflow_dispatch:
 
 concurrency:
   group: "pages"
